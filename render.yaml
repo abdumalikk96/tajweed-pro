@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: tajweed-pro-ai-backend
+    runtime: docker
+    rootDir: quran-ai-backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: OPENAI_API_KEY
+        sync: false
