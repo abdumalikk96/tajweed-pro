@@ -1944,6 +1944,73 @@ export default function MushafTrainer() {
     ? selectedWord.audioUrl
     : currentSheikhAyahUrl;
 
+  const { activeWaveformUrls, activeWaveformLabel } = useMemo(() => {
+    if (isSingleWordMode || playingAudioId === selectedWord.id) {
+      return {
+        activeWaveformUrls: [selectedWord.audioUrl],
+        activeWaveformLabel: `Sheikh Namuna (Etalon) • So'z: «${selectedWord.textUthmani}»`,
+      };
+    }
+    if (!isPageMode) {
+      return {
+        activeWaveformUrls: [currentSheikhAyahUrl],
+        activeWaveformLabel: `Sheikh Namuna (Etalon) • Oyat ${
+          currentAyah.verseKey ?? currentAyah.number
+        }`,
+      };
+    }
+    if (listenRangeStart !== null && listenRangeEnd !== null) {
+      const rangeAyahs = currentSurah.ayahs.filter((a) => {
+        const aNum = getAyahDisplayNumber(a);
+        return aNum >= listenRangeStart && aNum <= listenRangeEnd;
+      });
+      const urls = (rangeAyahs.length > 0 ? rangeAyahs : [currentAyah]).map(
+        (a) =>
+          buildSheikhAyahAudioUrl(
+            selectedSheikhId,
+            currentSurah.id,
+            a.number,
+            a.verseKey
+          )
+      );
+      return {
+        activeWaveformUrls: urls,
+        activeWaveformLabel:
+          listenRangeStart === listenRangeEnd
+            ? `Sheikh Namuna (Etalon) • Oyat ${listenRangeStart}`
+            : `Sheikh Namuna (Etalon) • Oraliq: Oyat ${listenRangeStart}–${listenRangeEnd}`,
+      };
+    }
+    const pageUrls = currentSurah.ayahs.map((a) =>
+      buildSheikhAyahAudioUrl(
+        selectedSheikhId,
+        currentSurah.id,
+        a.number,
+        a.verseKey
+      )
+    );
+    return {
+      activeWaveformUrls: pageUrls.length > 0 ? pageUrls : [currentSheikhAyahUrl],
+      activeWaveformLabel: `Sheikh Namuna (Etalon) • Sahifa ${activeMushafPage}`,
+    };
+  }, [
+    isSingleWordMode,
+    isPageMode,
+    playingAudioId,
+    selectedWord.id,
+    selectedWord.audioUrl,
+    selectedWord.textUthmani,
+    currentSheikhAyahUrl,
+    currentAyah,
+    listenRangeStart,
+    listenRangeEnd,
+    currentSurah.ayahs,
+    currentSurah.id,
+    selectedSheikhId,
+    activeMushafPage,
+    getAyahDisplayNumber,
+  ]);
+
   const activeCheckPoints = isPageMode
     ? currentSurah.ayahs.flatMap((a) => a.words.flatMap((w) => w.checkPoints))
     : isSingleWordMode
@@ -3582,6 +3649,29 @@ export default function MushafTrainer() {
                     <span>✕ Xatolarni tozalash</span>
                   </button>
                 )}
+
+                {/* Компактная кнопка сброса выбранного диапазона аятов в верхней строке (только когда диапазон реально выбран) */}
+                {isPageMode &&
+                  listenRangeStart !== null &&
+                  listenRangeEnd !== null && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setListenRangeStart(null);
+                        setListenRangeEnd(null);
+                      }}
+                      title="Tanlangan eshitish oralig'ini bekor qilish"
+                      className="bg-[#4ADE80]/15 hover:bg-[#4ADE80]/25 text-[#4ADE80] border border-[#4ADE80]/40 rounded-lg px-2.5 py-1 text-xs font-semibold transition-all cursor-pointer flex items-center gap-1 shadow-sm"
+                    >
+                      <span>
+                        🎧 Oyat {listenRangeStart}
+                        {listenRangeEnd !== listenRangeStart
+                          ? `–${listenRangeEnd}`
+                          : ''}{' '}
+                        ✕
+                      </span>
+                    </button>
+                  )}
               </div>
 
               <div className="flex items-center gap-2.5">
@@ -3811,80 +3901,6 @@ export default function MushafTrainer() {
                     </div>
                   </div>
                 )}
-
-              {/* Интерактивная полоска выбора диапазона аятов текущей страницы («От и До») */}
-              {isPageMode && currentSurah.ayahs.length > 0 && (
-                <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2 rounded-2xl bg-[#242B35] border border-[#5E4D8C] text-xs shadow-sm">
-                  <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-                    <span className="font-extrabold text-[#4ADE80] shrink-0 flex items-center gap-1">
-                      <span>🎧 Eshitish oralig&apos;i:</span>
-                    </span>
-                    <div className="flex flex-wrap items-center gap-1">
-                      {currentSurah.ayahs.map((ayah, pillIdx) => {
-                        const aNum = getAyahDisplayNumber(ayah);
-                        const isInRange =
-                          listenRangeStart !== null &&
-                          listenRangeEnd !== null &&
-                          aNum >= listenRangeStart &&
-                          aNum <= listenRangeEnd;
-                        const isRangeStart =
-                          listenRangeStart !== null && aNum === listenRangeStart;
-                        const isRangeEnd =
-                          listenRangeEnd !== null && aNum === listenRangeEnd;
-
-                        return (
-                          <React.Fragment
-                            key={`range-pill-${ayah.verseKey ?? ayah.number}-${pillIdx}`}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => handleAyahRangeClick(aNum, ayah)}
-                              title={`Oyat ${aNum}: 1-bosish — boshlanishi (▶️), 2-bosish — tugashi (⏹️)`}
-                              className={cn(
-                                'px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 border',
-                                isRangeStart || isRangeEnd
-                                  ? 'bg-[#4ADE80] text-[#0B1710] border-[#6EE7A0] font-extrabold shadow-[0_0_12px_rgba(74,222,128,0.3)]'
-                                  : isInRange
-                                  ? 'bg-[#4ADE80]/20 text-[#4ADE80] border-[#4ADE80]/50 font-bold'
-                                  : 'bg-[#1E2530] hover:bg-[#2C3542] text-slate-200 border-[#5E4D8C]'
-                              )}
-                            >
-                              {isRangeStart && <span>▶️</span>}
-                              <span>Oyat {aNum}</span>
-                              {isRangeEnd && <span>⏹️</span>}
-                            </button>
-                            {pillIdx < currentSurah.ayahs.length - 1 && (
-                              <span className="text-slate-500 text-[10px] select-none">
-                                —
-                              </span>
-                            )}
-                          </React.Fragment>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
-                    {listenRangeStart !== null && listenRangeEnd !== null ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setListenRangeStart(null);
-                          setListenRangeEnd(null);
-                        }}
-                        title="Tanlangan oraliqni bekor qilish va butun sahifani tanlash"
-                        className="px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/40 text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1"
-                      >
-                        <span>✕ Hammasi</span>
-                      </button>
-                    ) : (
-                      <span className="text-[11px] text-slate-300 font-medium">
-                        Oraliq tanlash uchun oyat raqamlarini bosing
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
 
               {/* Контейнер страницы и текста без внутренних полос прокрутки (куб растет вместе со страницей!) */}
               <div className="h-auto w-full overflow-visible rounded-2xl border border-[#5E4D8C] bg-[#161B22] shadow-2xl p-4 sm:p-5">
@@ -4468,212 +4484,222 @@ export default function MushafTrainer() {
               </div>
             )}
 
-            {/* Двойная визуализация звука (Эталон Шейха + Живой голос) */}
-            <DualWaveformVisualizer
-              referenceAudioUrl={activeReferenceUrl}
-              isRecording={isRecording}
-              userAudioBuffer={userRecordingBuffer}
-              userSampleRate={16000}
-              userAudioUrl={userRecordingUrl}
-            />
+            {/* ======================================================================== */}
+            {/* ЗАКРЕПЛЕННАЯ НИЖНЯЯ ПАНЕЛЬ УПРАВЛЕНИЯ И АУДИО-ВОЛНЫ (Sticky Control Dock) */}
+            {/* ======================================================================== */}
+            <div className="sticky bottom-0 z-30 mt-3 pt-2.5 pb-3 px-4 bg-[#1B2028]/95 backdrop-blur-md border-t border-[#5E4D8C] rounded-b-2xl shadow-[0_-10px_30px_rgba(0,0,0,0.65)] space-y-2.5">
+              {/* 1. Компактная двойная визуализация звука (Эталон Шейха + Живой голос) */}
+              <DualWaveformVisualizer
+                referenceAudioUrl={activeReferenceUrl}
+                referenceAudioUrls={activeWaveformUrls}
+                referenceLabel={activeWaveformLabel}
+                compact
+                isRecording={isRecording}
+                userAudioBuffer={userRecordingBuffer}
+                userSampleRate={16000}
+                userAudioUrl={userRecordingUrl}
+              />
 
-            {/* Переключатель голоса из 10 шейхов в верхней панели плеера */}
-            <div className="rounded-2xl bg-[#242B35] border border-[#5E4D8C] p-3.5 space-y-2 shadow-sm text-slate-100">
-              <div className="flex flex-wrap items-center justify-between gap-2.5">
-                <div className="flex flex-wrap items-center gap-2 min-w-0">
-                  <Volume2 className="w-4 h-4 text-[#4ADE80] shrink-0" />
-                  <span className="text-xs font-bold text-white shrink-0">
-                    Namuna ovozi (10 qori):
-                  </span>
-                  <select
-                    value={selectedSheikhId}
-                    onChange={(e) => handleSheikhChange(e.target.value as SheikhId)}
-                    aria-label="Namuna uchun shayx ovozi"
-                    className="text-xs font-bold px-3 py-1.5 rounded-xl bg-[#1E2530] text-white border border-[#52437A] hover:border-[#4ADE80] focus:outline-none focus:border-[#4ADE80] cursor-pointer truncate max-w-full sm:max-w-[260px]"
-                  >
-                    {TEN_SHEIKHS_CATALOG.map((sh, idx) => (
-                      <option
-                        key={sh.id}
-                        value={sh.id}
-                        className="bg-[#1E2530] text-white"
-                      >
-                        {idx + 1}. {sh.nameUz}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  {isSingleWordMode && (
-                    <button
-                      type="button"
-                      disabled={isExamReferenceLocked}
-                      onClick={() => {
-                        if (isExamReferenceLocked) return;
-                        playAudioUrl(currentSheikhAyahUrl, 'sheikh_full_ayah_preview');
-                      }}
-                      className={cn(
-                        'px-3 py-1.5 rounded-xl text-[11px] font-bold border-2 flex items-center gap-1.5 transition-all cursor-pointer shrink-0 shadow-sm disabled:opacity-45 disabled:cursor-not-allowed',
-                        playingAudioId === 'sheikh_full_ayah_preview'
-                          ? 'bg-[#4ADE80] text-[#0B1710] border border-[#6EE7A0] shadow-[0_0_20px_rgba(74,222,128,0.28)] font-extrabold'
-                          : 'bg-[#1E2530] hover:bg-[#323D4D] text-white border-[#5E4D8C]'
-                      )}
-                      title={
-                        isExamReferenceLocked
-                          ? "Imtihon rejimida namuna eshitish bloklangan"
-                          : "Tanlangan shayx ovozida oyatni to'liq eshitish"
+              {/* 2. Компактный переключатель голоса из 10 шейхов + бейдж консенсуса */}
+              <div className="rounded-xl bg-[#242B35] border border-[#5E4D8C] p-2.5 shadow-sm text-slate-100">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2 min-w-0">
+                    <Volume2 className="w-3.5 h-3.5 text-[#4ADE80] shrink-0" />
+                    <span className="text-xs font-bold text-white shrink-0">
+                      Namuna ovozi (10 qori):
+                    </span>
+                    <select
+                      value={selectedSheikhId}
+                      onChange={(e) =>
+                        handleSheikhChange(e.target.value as SheikhId)
                       }
+                      aria-label="Namuna uchun shayx ovozi"
+                      className="text-xs font-bold px-2.5 py-1 rounded-lg bg-[#1E2530] text-white border border-[#52437A] hover:border-[#4ADE80] focus:outline-none focus:border-[#4ADE80] cursor-pointer truncate max-w-full sm:max-w-[240px]"
                     >
-                      <Volume2 className="w-3.5 h-3.5 shrink-0" />
-                      <span>🔊 Oyatni shayx ovozida eshitish</span>
-                    </button>
-                  )}
-                  <span className="px-2.5 py-1 rounded-xl bg-[#1E2530] border border-[#52437A] text-[#4ADE80] text-[11px] font-bold shrink-0">
-                    Qiyinlik: {strictnessLevel}%
-                  </span>
+                      {TEN_SHEIKHS_CATALOG.map((sh, idx) => (
+                        <option
+                          key={sh.id}
+                          value={sh.id}
+                          className="bg-[#1E2530] text-white"
+                        >
+                          {idx + 1}. {sh.nameUz}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="hidden md:inline-block px-2 py-0.5 rounded-lg bg-[#1E2530] border border-[#52437A]/80 text-slate-300 text-[10px] font-semibold">
+                      10 qori tajvid konsensusi • Individual tahlil
+                    </span>
+                    {isSingleWordMode && (
+                      <button
+                        type="button"
+                        disabled={isExamReferenceLocked}
+                        onClick={() => {
+                          if (isExamReferenceLocked) return;
+                          playAudioUrl(
+                            currentSheikhAyahUrl,
+                            'sheikh_full_ayah_preview'
+                          );
+                        }}
+                        className={cn(
+                          'px-2.5 py-1 rounded-lg text-[11px] font-bold border flex items-center gap-1 transition-all cursor-pointer shrink-0 shadow-sm disabled:opacity-45 disabled:cursor-not-allowed',
+                          playingAudioId === 'sheikh_full_ayah_preview'
+                            ? 'bg-[#4ADE80] text-[#0B1710] border-[#6EE7A0] shadow-[0_0_20px_rgba(74,222,128,0.28)] font-extrabold'
+                            : 'bg-[#1E2530] hover:bg-[#323D4D] text-white border-[#5E4D8C]'
+                        )}
+                        title={
+                          isExamReferenceLocked
+                            ? "Imtihon rejimida namuna eshitish bloklangan"
+                            : "Tanlangan shayx ovozida oyatni to'liq eshitish"
+                        }
+                      >
+                        <Volume2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>🔊 Oyatni shayx ovozida eshitish</span>
+                      </button>
+                    )}
+                    <span className="px-2.5 py-0.5 rounded-lg bg-[#1E2530] border border-[#52437A] text-[#4ADE80] text-[11px] font-bold shrink-0">
+                      Qiyinlik: {strictnessLevel}%
+                    </span>
+                  </div>
                 </div>
               </div>
 
-              <p className="text-[11px] text-slate-300 font-medium leading-snug text-left">
-                Shayx ovozi — faqat eshitish uchun namuna. AI sizni bitta shayx ovoziga emas, 10 ta qorining umumiy tajvid me&apos;yorlariga va o&apos;z ovoz xususiyatlaringizga qarab individual baholaydi.
-              </p>
-            </div>
-
-            {/* Панель с кнопками записи и прослушивания эталона */}
-            <div className="pt-1 flex flex-col sm:flex-row items-center justify-center gap-3.5">
-              <button
-                type="button"
-                disabled={isExamReferenceLocked}
-                onClick={() => {
-                  if (isExamReferenceLocked) return;
-                  if (isPageMode) {
-                    playPageAyahsSequential(currentSurah.ayahs);
-                  } else {
-                    playAudioUrl(activeReferenceUrl, 'main_stage_reference');
+              {/* 3. Панель с кнопками записи и прослушивания эталона */}
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+                <button
+                  type="button"
+                  disabled={isExamReferenceLocked}
+                  onClick={() => {
+                    if (isExamReferenceLocked) return;
+                    if (isPageMode) {
+                      playPageAyahsSequential(currentSurah.ayahs);
+                    } else {
+                      playAudioUrl(activeReferenceUrl, 'main_stage_reference');
+                    }
+                  }}
+                  title={
+                    isExamReferenceLocked
+                      ? "Imtihon rejimida namuna eshitish bloklangan"
+                      : undefined
                   }
-                }}
-                title={
-                  isExamReferenceLocked
-                    ? "Imtihon rejimida namuna eshitish bloklangan"
-                    : undefined
-                }
-                className={cn(
-                  'w-full sm:w-auto px-6 py-4 rounded-2xl text-sm font-bold border-2 flex items-center justify-center gap-2.5 transition-all shadow-md cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed',
-                  playingAudioId === 'main_stage_page_reference' ||
-                    playingAudioId === 'main_stage_reference' ||
-                    playingAudioId === selectedWord.id
-                    ? 'bg-[#4ADE80] text-[#0B1710] border border-[#6EE7A0] shadow-[0_0_20px_rgba(74,222,128,0.28)] shadow-md font-extrabold'
-                    : 'bg-[#242B35] hover:bg-[#2C3542] text-slate-100 border border-[#5E4D8C]'
-                )}
-              >
-                <Volume2
                   className={cn(
-                    'w-4 h-4 text-[#4ADE80] shrink-0',
-                    (playingAudioId !== null || isAudioBufferingId !== null) &&
-                      'animate-pulse'
-                  )}
-                />
-                <span>
-                  {isExamReferenceLocked
-                    ? '🔒 Imtihon vaqtida namuna yopiq'
-                    : isPageMode
-                    ? playingAudioId === 'main_stage_page_reference'
-                      ? listenRangeStart !== null && listenRangeEnd !== null
-                        ? `Oraliq o'qilmoqda (Oyat ${listenRangeStart}–${listenRangeEnd})...`
-                        : `Sahifa o'qilmoqda (${(playingPageAyahIndex ?? 0) + 1}/${currentSurah.ayahs.length})...`
-                      : listenRangeStart !== null && listenRangeEnd !== null
-                      ? `🔊 Oraliqni eshitish: Oyat ${listenRangeStart}–${listenRangeEnd} (${referencePlaybackRate}x)`
-                      : `🔊 Sahifani to'liq eshitish (${referencePlaybackRate}x)`
-                    : playingAudioId === 'main_stage_reference' ||
+                    'w-full sm:w-auto px-5 py-3 rounded-2xl text-xs sm:text-sm font-bold border-2 flex items-center justify-center gap-2 transition-all shadow-md cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed',
+                    playingAudioId === 'main_stage_page_reference' ||
+                      playingAudioId === 'main_stage_reference' ||
                       playingAudioId === selectedWord.id
-                    ? `Namuna (${referencePlaybackRate}x)...`
-                    : `🔊 Namuna eshitish (${referencePlaybackRate}x)`}
-                </span>
-              </button>
+                      ? 'bg-[#4ADE80] text-[#0B1710] border border-[#6EE7A0] shadow-[0_0_20px_rgba(74,222,128,0.28)] shadow-md font-extrabold'
+                      : 'bg-[#242B35] hover:bg-[#2C3542] text-slate-100 border border-[#5E4D8C]'
+                  )}
+                >
+                  <Volume2
+                    className={cn(
+                      'w-4 h-4 text-[#4ADE80] shrink-0',
+                      (playingAudioId !== null || isAudioBufferingId !== null) &&
+                        'animate-pulse'
+                    )}
+                  />
+                  <span>
+                    {isExamReferenceLocked
+                      ? '🔒 Imtihon vaqtida namuna yopiq'
+                      : isPageMode
+                      ? playingAudioId === 'main_stage_page_reference'
+                        ? listenRangeStart !== null && listenRangeEnd !== null
+                          ? listenRangeStart === listenRangeEnd
+                            ? `Oyat ${listenRangeStart} o'qilmoqda...`
+                            : `Oraliq o'qilmoqda (Oyat ${listenRangeStart}–${listenRangeEnd})...`
+                          : `Sahifa o'qilmoqda (${(playingPageAyahIndex ?? 0) + 1}/${currentSurah.ayahs.length})...`
+                        : listenRangeStart !== null && listenRangeEnd !== null
+                        ? listenRangeStart === listenRangeEnd
+                          ? `🔊 Oyatni eshitish: Oyat ${listenRangeStart} (${referencePlaybackRate}x)`
+                          : `🔊 Oraliqni eshitish: Oyat ${listenRangeStart}–${listenRangeEnd} (${referencePlaybackRate}x)`
+                        : `🔊 Sahifani to'liq eshitish (${referencePlaybackRate}x)`
+                      : isSingleWordMode
+                      ? playingAudioId === 'main_stage_reference' ||
+                        playingAudioId === selectedWord.id
+                        ? `So'z o'qilmoqda (${referencePlaybackRate}x)...`
+                        : `🔊 Namuna eshitish (${referencePlaybackRate}x)`
+                      : playingAudioId === 'main_stage_reference'
+                      ? `Oyat o'qilmoqda (${referencePlaybackRate}x)...`
+                      : `🔊 Oyatni eshitish (${referencePlaybackRate}x)`}
+                  </span>
+                </button>
 
-              <button
-                type="button"
-                onClick={handleToggleRecording}
-                disabled={isAnalyzing}
-                className={cn(
-                  'w-full sm:w-auto min-w-[250px] px-8 py-4 rounded-2xl text-sm sm:text-base font-extrabold border-2 flex items-center justify-center gap-2.5 transition-all shadow-xl cursor-pointer disabled:opacity-60',
-                  isRecording
-                    ? 'bg-rose-600 hover:bg-rose-500 text-white border-[#5E4D8C] ring-4 ring-rose-500/30 animate-pulse'
-                    : 'bg-[#4ADE80] hover:bg-[#38C96E] text-[#0B1710] border-2 border-[#6EE7A0] shadow-[0_0_20px_rgba(74,222,128,0.28)] shadow-xl shadow-[#4ADE80]/30'
-                )}
-              >
-                {isRecording ? (
-                  <>
-                    <Square className="w-4 h-4 fill-current shrink-0" />
-                    <span>To&apos;xtatish</span>
-                  </>
-                ) : (
-                  <>
-                    <Mic className="w-5 h-5 shrink-0" />
-                    <span>🎙️ O&apos;qish uchun bosing</span>
-                  </>
-                )}
-              </button>
-            </div>
-
-            {/* Подсказка горячих клавиш клавиатуры */}
-            <p className="text-[11px] text-slate-300 font-medium select-none pt-0.5">
-              Klaviatura: <span className="text-[#4ADE80] font-bold">[Probel]</span> — Yozish/To&apos;xtatish •{' '}
-              <span className="text-[#4ADE80] font-bold">[←/→]</span> —{' '}
-              {isPageMode
-                ? 'Oldingi/Keyingi sahifa'
-                : isSingleWordMode
-                ? "Oldingi/Keyingi so'z"
-                : 'Oldingi/Keyingi oyat'}{' '}
-              • <span className="text-[#4ADE80] font-bold">[N]</span> —{' '}
-              {isPageMode ? "Sahifani to'liq eshitish" : 'Namuna'}
-            </p>
-
-            {/* Индикатор уровня микрофона во время записи */}
-            {isRecording && (
-              <div className="max-w-md mx-auto pt-1 space-y-2">
-                <div className="rounded-xl bg-[#1E2631] border border-[#5E4D8C] px-4 py-2 space-y-1.5">
-                  <div className="flex items-center justify-between text-xs font-medium">
-                    <span className="text-white">
-                      Ovoz darajasi:{' '}
-                      <strong className="text-[#4ADE80]">
-                        {liveLevelPercent}% ({liveDb} dB)
-                      </strong>
-                    </span>
-                    <span className="font-mono text-[#4ADE80] font-bold">
-                      {(recordingDurationMs / 1000).toFixed(1)} s
-                    </span>
-                  </div>
-                  <div className="w-full h-1.5 rounded-full bg-[#1E2530] overflow-hidden">
-                    <div
-                      className={cn(
-                        'h-full rounded-full transition-all duration-75',
-                        liveLevelPercent > 15
-                          ? 'bg-emerald-400'
-                          : 'bg-[#4ADE80]'
-                      )}
-                      style={{ width: `${Math.max(4, liveLevelPercent)}%` }}
-                    />
-                  </div>
-                </div>
-
-                <div className="h-7 flex items-end justify-center gap-1 px-4">
-                  {liveWaveform.slice(0, 28).map((barHeight, idx) => (
-                    <div
-                      key={idx}
-                      className="flex-1 rounded-full bg-[#4ADE80] transition-all duration-75"
-                      style={{ height: `${Math.max(12, barHeight)}%` }}
-                    />
-                  ))}
-                </div>
+                <button
+                  type="button"
+                  onClick={handleToggleRecording}
+                  disabled={isAnalyzing}
+                  className={cn(
+                    'w-full sm:w-auto min-w-[230px] px-7 py-3 rounded-2xl text-xs sm:text-sm font-extrabold border-2 flex items-center justify-center gap-2 transition-all shadow-xl cursor-pointer disabled:opacity-60',
+                    isRecording
+                      ? 'bg-rose-600 hover:bg-rose-500 text-white border-[#5E4D8C] ring-4 ring-rose-500/30 animate-pulse'
+                      : 'bg-[#4ADE80] hover:bg-[#38C96E] text-[#0B1710] border-2 border-[#6EE7A0] shadow-[0_0_20px_rgba(74,222,128,0.28)] shadow-xl shadow-[#4ADE80]/30'
+                  )}
+                >
+                  {isRecording ? (
+                    <>
+                      <Square className="w-4 h-4 fill-current shrink-0" />
+                      <span>To&apos;xtatish</span>
+                    </>
+                  ) : (
+                    <>
+                      <Mic className="w-4 h-4 shrink-0" />
+                      <span>🎙️ O&apos;qish uchun bosing</span>
+                    </>
+                  )}
+                </button>
               </div>
-            )}
 
-            {micError && (
-              <p className="text-xs text-rose-200 bg-rose-950/80 border-2 border-rose-500 rounded-xl p-3 max-w-md mx-auto">
-                {micError}
+              {/* Подсказка горячих клавиш клавиатуры */}
+              <p className="text-[11px] text-slate-300 font-medium select-none">
+                Klaviatura: <span className="text-[#4ADE80] font-bold">[Probel]</span> — Yozish/To&apos;xtatish •{' '}
+                <span className="text-[#4ADE80] font-bold">[←/→]</span> —{' '}
+                {isPageMode
+                  ? 'Oldingi/Keyingi sahifa'
+                  : isSingleWordMode
+                  ? "Oldingi/Keyingi so'z"
+                  : 'Oldingi/Keyingi oyat'}{' '}
+                • <span className="text-[#4ADE80] font-bold">[N]</span> —{' '}
+                {isPageMode ? "Sahifani to'liq eshitish" : 'Namuna'}
               </p>
-            )}
+
+              {/* Индикатор уровня микрофона во время записи */}
+              {isRecording && (
+                <div className="max-w-md mx-auto pt-0.5 space-y-1.5">
+                  <div className="rounded-xl bg-[#1E2631] border border-[#5E4D8C] px-3 py-1.5 space-y-1">
+                    <div className="flex items-center justify-between text-xs font-medium">
+                      <span className="text-white">
+                        Ovoz darajasi:{' '}
+                        <strong className="text-[#4ADE80]">
+                          {liveLevelPercent}% ({liveDb} dB)
+                        </strong>
+                      </span>
+                      <span className="font-mono text-[#4ADE80] font-bold">
+                        {(recordingDurationMs / 1000).toFixed(1)} s
+                      </span>
+                    </div>
+                    <div className="w-full h-1.5 rounded-full bg-[#1E2530] overflow-hidden">
+                      <div
+                        className={cn(
+                          'h-full rounded-full transition-all duration-75',
+                          liveLevelPercent > 15
+                            ? 'bg-emerald-400'
+                            : 'bg-[#4ADE80]'
+                        )}
+                        style={{ width: `${Math.max(4, liveLevelPercent)}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {micError && (
+                <p className="text-xs text-rose-200 bg-rose-950/80 border-2 border-rose-500 rounded-xl p-2.5 max-w-md mx-auto">
+                  {micError}
+                </p>
+              )}
+            </div>
           </div>
         </div>
       </main>

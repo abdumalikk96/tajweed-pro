@@ -7,6 +7,12 @@ import { trimSilence } from '@/lib/audioUtils';
 export interface DualWaveformVisualizerProps {
   /** Ссылка на эталонное аудио шейха */
   referenceAudioUrl?: string;
+  /** Список ссылок на эталонные аудио (для диапазона аятов или всей страницы) */
+  referenceAudioUrls?: string[];
+  /** Динамическая подпись текущего объекта эталона (Слово / Аят / Диапазон / Страница) */
+  referenceLabel?: string;
+  /** Компактный режим для закрепленной нижней панели (Sticky Control Dock) */
+  compact?: boolean;
   /** Идет ли сейчас запись (показываем индикатор поверх эталона) */
   isRecording: boolean;
   /** Готовая запись ученика (PCM Float32Array) — приоритетный источник */
@@ -132,6 +138,9 @@ function drawRoundedBar(
 
 export default function DualWaveformVisualizer({
   referenceAudioUrl,
+  referenceAudioUrls,
+  referenceLabel,
+  compact = false,
   isRecording,
   userAudioBuffer,
   userSampleRate = 16000,
@@ -142,20 +151,66 @@ export default function DualWaveformVisualizer({
   const [refTrimmed, setRefTrimmed] = useState<TrimmedPcm | null>(null);
   const [userTrimmed, setUserTrimmed] = useState<TrimmedPcm | null>(null);
 
-  // 1. Эталон шейха: декодирование + обрезка тишины
+  const effectiveUrlsKey = useMemo(() => {
+    if (referenceAudioUrls && referenceAudioUrls.length > 0) {
+      return referenceAudioUrls.filter(Boolean).join('|');
+    }
+    return referenceAudioUrl || '';
+  }, [referenceAudioUrl, referenceAudioUrls]);
+
+  // 1. Эталон шейха: декодирование одного или нескольких URL + обрезка тишины
   useEffect(() => {
     let cancelled = false;
     setRefTrimmed(null);
-    if (!referenceAudioUrl) return;
+    const urls = effectiveUrlsKey ? effectiveUrlsKey.split('|').filter(Boolean) : [];
+    if (urls.length === 0) return;
 
     (async () => {
-      const decoded = await fetchAndDecode(referenceAudioUrl);
-      if (cancelled || !decoded) return;
-      const ch0 = decoded.getChannelData(0);
-      const copy = new Float32Array(ch0.length);
-      copy.set(ch0);
-      const trimmed = trimToSpeech(copy, decoded.sampleRate);
-      if (!cancelled) setRefTrimmed(trimmed);
+      const targetUrls = urls.slice(0, 12);
+      const decodedList = await Promise.all(
+        targetUrls.map((u) => fetchAndDecode(u))
+      );
+      if (cancelled) return;
+
+      const validTrimmed: TrimmedPcm[] = [];
+      for (const decoded of decodedList) {
+        if (!decoded) continue;
+        const ch0 = decoded.getChannelData(0);
+        const copy = new Float32Array(ch0.length);
+        copy.set(ch0);
+        const trimmed = trimToSpeech(copy, decoded.sampleRate);
+        if (trimmed && trimmed.pcm.length > 0) {
+          validTrimmed.push(trimmed);
+        }
+      }
+
+      if (cancelled || validTrimmed.length === 0) return;
+
+      if (validTrimmed.length === 1) {
+        setRefTrimmed(validTrimmed[0]);
+        return;
+      }
+
+      const baseSr = validTrimmed[0].sampleRate;
+      const totalSamples = validTrimmed.reduce((acc, item) => acc + item.pcm.length, 0);
+      const totalDurationMs = validTrimmed.reduce(
+        (acc, item) => acc + item.durationMs,
+        0
+      );
+      const mergedPcm = new Float32Array(totalSamples);
+      let offset = 0;
+      for (const item of validTrimmed) {
+        mergedPcm.set(item.pcm, offset);
+        offset += item.pcm.length;
+      }
+
+      if (!cancelled) {
+        setRefTrimmed({
+          pcm: mergedPcm,
+          sampleRate: baseSr,
+          durationMs: totalDurationMs,
+        });
+      }
     })().catch((err) =>
       console.warn('[DualWaveform] Не удалось декодировать эталон шейха:', err)
     );
@@ -163,7 +218,7 @@ export default function DualWaveformVisualizer({
     return () => {
       cancelled = true;
     };
-  }, [referenceAudioUrl]);
+  }, [effectiveUrlsKey]);
 
   // 2. Готовая запись ученика: декодирование ПОСЛЕ окончания записи + обрезка тишины
   useEffect(() => {
@@ -280,21 +335,22 @@ export default function DualWaveformVisualizer({
   return (
     <div
       className={cn(
-        'w-full rounded-2xl bg-[#0B0F17] border border-[#52437A]/70 p-3 space-y-2.5 shadow-inner',
+        'w-full rounded-2xl bg-[#0B0F17] border border-[#52437A]/70 shadow-inner',
+        compact ? 'p-2.5 space-y-1.5' : 'p-3 space-y-2.5',
         className
       )}
     >
       {/* Легенда */}
-      <div className="flex items-center justify-between text-[11px] px-1 select-none">
-        <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-[#1A6B8A]" />
-          <span className="text-sky-400 font-medium">
-            Sheikh Namuna (Etalon)
-            {refSec && <span className="text-slate-400 ml-1">{refSec} s</span>}
+      <div className="flex items-center justify-between text-[11px] px-1 select-none gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="w-2.5 h-2.5 rounded-full bg-[#1A6B8A] shrink-0" />
+          <span className="text-sky-400 font-medium truncate">
+            {referenceLabel || 'Sheikh Namuna (Etalon)'}
+            {refSec && <span className="text-slate-400 ml-1.5 font-mono">{refSec} s</span>}
           </span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 shrink-0">
           <span
             className={cn(
               'w-2.5 h-2.5 rounded-full',
@@ -314,7 +370,12 @@ export default function DualWaveformVisualizer({
       </div>
 
       {/* Canvas с наложением */}
-      <div className="w-full h-24 rounded-xl overflow-hidden border border-[#52437A]/50 bg-[#0B0F17] relative">
+      <div
+        className={cn(
+          'w-full rounded-xl overflow-hidden border border-[#52437A]/50 bg-[#0B0F17] relative',
+          compact ? 'h-14 sm:h-16' : 'h-24'
+        )}
+      >
         <canvas
           ref={canvasRef}
           width={CANVAS_WIDTH}
