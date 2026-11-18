@@ -32,6 +32,7 @@ export interface HybridNeuralContext {
   expectedPhonemes?: string;
   calibrationProfile?: VoiceCalibrationProfile | null;
   recordedAudioUrl?: string;
+  strictnessLevel?: number;
 }
 
 /**
@@ -618,53 +619,117 @@ export function analyzeWordOrAyahAudio(
       cp.rule === 'ghunnah' ||
       Boolean(cp.expectedHarakaat);
 
-    // 2. ПРОВЕРКА МАДДОВ И ГУННЫ
+    const strictnessLevel = Math.max(
+      50,
+      Math.min(100, neuralContext?.strictnessLevel ?? 75)
+    );
+    const strictnessSlack = ((100 - strictnessLevel) / 50) * 0.25;
+
+    // 2. ПРОВЕРКА МАДДОВ (madd_2, madd_4, madd_6) И ГУННЫ ПО УЧАСТКУ ВОКАЛИЗОВАННОЙ ЭНЕРГИИ (rms > 0.22 * peak_rms)
     if (isMaddOrGhunnah && cp.expectedHarakaat && !isWrongWordRecognized) {
+      const rawSyllableFrames = allFrames.filter(
+        (f) => f.timeMs >= rawSegStart - 10 && f.timeMs <= rawSegEnd + 10
+      );
+      const sourceFrames =
+        rawSyllableFrames.length > 0 ? rawSyllableFrames : segmentFrames;
+      const peakRmsInSyllable = sourceFrames.reduce(
+        (maxR, f) => (f.rms > maxR ? f.rms : maxR),
+        0.002
+      );
+      // Исключаем глухие согласные (zcr >= 0.30) и паузы между словами (rms <= 0.22 * peak_rms)
+      const voicedHoldFrames = sourceFrames.filter(
+        (f) => f.rms > 0.22 * peakRmsInSyllable && f.zcr < 0.3
+      );
+      const voicedHoldDurationMs =
+        voicedHoldFrames.length > 0
+          ? voicedHoldFrames.length * 10
+          : effectiveVoicedMs;
+
+      const harakaReferenceMs = Math.max(
+        115,
+        Math.min(250, effectiveHarakaUnitMs * 0.62)
+      );
       measuredHarakaat = Number(
         Math.max(
-          1.0,
-          Math.min(
-            cp.expectedHarakaat * 1.3,
-            effectiveVoicedMs / Math.max(180, effectiveHarakaUnitMs)
-          )
+          0.4,
+          Math.min(7.5, voicedHoldDurationMs / harakaReferenceMs)
         ).toFixed(1)
       );
-      const ratio = measuredHarakaat / cp.expectedHarakaat;
 
-      const ruleNameRu =
-        cp.rule === 'madd_6'
-          ? 'Мадд Лазим'
-          : cp.rule === 'madd_4'
-          ? 'Мадд 4 счета'
-          : cp.rule === 'ghunnah'
-          ? 'Гунна'
-          : 'Мадд 2 счета';
+      const isMadd6 = cp.rule === 'madd_6' || cp.expectedHarakaat >= 5.5;
+      const isMadd4 =
+        !isMadd6 && (cp.rule === 'madd_4' || cp.expectedHarakaat >= 3.5);
+      const isGhunnah = cp.rule === 'ghunnah';
 
-      const isMaddArid = idx === checkPoints.length - 2 || idx === checkPoints.length - 1;
-      if (isMaddArid && measuredHarakaat >= 1.7 && measuredHarakaat <= 6.5) {
+      const ruleLabelUz = isMadd6
+        ? 'Madd Lazim (6 harakat)'
+        : isMadd4
+        ? 'Madd Wajib Muttasil / Jaiz Munfasil (4–5 harakat)'
+        : isGhunnah
+        ? "G'unna (2 harakat)"
+        : 'Madd Tabiiy (2 harakat)';
+
+      // Канонические коридоры:
+      // Madd Tabiiy (2): 1.6 – 2.8
+      // Madd Wajib / Munfasil (4–5): 3.3 – 5.5
+      // Madd Lazim (6): 4.8 – 6.8
+      const baseMin = isMadd6 ? 4.8 : isMadd4 ? 3.3 : 1.6;
+      const baseMax = isMadd6 ? 6.8 : isMadd4 ? 5.5 : 2.8;
+      const minCorridor = Number(Math.max(0.8, baseMin - strictnessSlack).toFixed(2));
+      const maxCorridor = Number((baseMax + strictnessSlack).toFixed(2));
+
+      const isMaddArid =
+        (idx === checkPoints.length - 2 || idx === checkPoints.length - 1) &&
+        !isMadd6 &&
+        !isGhunnah;
+
+      if (
+        isMaddArid &&
+        measuredHarakaat >= 1.6 - strictnessSlack &&
+        measuredHarakaat <= 6.8 + strictnessSlack
+      ) {
         status = 'perfect';
-        score = Math.max(score, 98);
+        score = Math.max(score, 99);
         feedbackParts.push(
-          `Madd 'Ariz lis-sukun выдержан отлично: ${measuredHarakaat} счета (канонический диапазон 2, 4 или 6 счетов).`
+          `«${cp.letterArabic}» harfida Madd 'Ariz lis-sukun me'yorida to'g'ri cho'zildi: amalda ${measuredHarakaat} harakat o'qildi (me'yor: 2, 4 yoki 6 harakat).`
         );
-      } else if (ratio < 0.55) {
-        status = 'warning';
-        score = Math.min(score, Math.max(62, Math.round(ratio * 100)));
+      } else if (
+        measuredHarakaat >= minCorridor &&
+        measuredHarakaat <= maxCorridor
+      ) {
+        status = 'perfect';
+        score = Math.max(score, 99);
         feedbackParts.push(
-          `${ruleNameRu} немного укорочен: вы тянули ${measuredHarakaat} счета вместо ${cp.expectedHarakaat}.`
+          `«${cp.letterArabic}» harfida ${ruleLabelUz} me'yorida to'g'ri cho'zildi: amalda ${measuredHarakaat} harakat o'qildi (me'yor: ${baseMin}–${baseMax} harakat).`
+        );
+      } else if (measuredHarakaat < minCorridor) {
+        status =
+          strictnessLevel <= 55 && measuredHarakaat >= minCorridor * 0.82
+            ? 'warning'
+            : 'mistake';
+        score = Math.min(
+          score,
+          Math.max(
+            32,
+            Math.round((measuredHarakaat / cp.expectedHarakaat) * 78)
+          )
+        );
+        feedbackParts.push(
+          `«${cp.letterArabic}» harfida ${ruleLabelUz} qisqa o'qildi: amalda ${measuredHarakaat} harakat cho'zildi, qoida bo'yicha ${cp.expectedHarakaat} harakat (me'yor: ${baseMin}–${baseMax} harakat) cho'zish kerak!`
         );
       } else {
-        score = Math.max(score, 90);
+        status = 'warning';
+        score = Math.min(score, 76);
         feedbackParts.push(
-          `Длина протяжки выдержана хорошо: ${measuredHarakaat} счета из ${cp.expectedHarakaat}.`
+          `«${cp.letterArabic}» harfida ${ruleLabelUz} haddan ortiq cho'zildi: amalda ${measuredHarakaat} harakat o'qildi, qoida bo'yicha ${cp.expectedHarakaat} harakat (me'yor: ${baseMin}–${baseMax} harakat) bo'lishi kerak.`
         );
       }
 
-      if (cp.rule === 'ghunnah' && avgNasalRatio < 0.55) {
+      if (isGhunnah && avgNasalRatio < 0.55) {
         if (status === 'perfect') status = 'warning';
         score = Math.min(score, 74);
         feedbackParts.push(
-          'Добавьте больше назального резонанса в носу (Гунна).'
+          `«${cp.letterArabic}» harfida G'unna uchun ovozni dimog'da (burun rezonansi bilan) 2 harakat ushlab o'qing.`
         );
       }
     }
@@ -680,18 +745,18 @@ export function analyzeWordOrAyahAudio(
         status = 'mistake';
         score = Math.min(score, 48);
         feedbackParts.push(
-          `Буква «${cp.letterArabic}» прозвучала слишком мягко. Поднимите заднюю часть языка к мягкому нёбу (Тафхим).`
+          `«${cp.letterArabic}» harfi juda yumshoq o'qildi (F2: ${avgF2Hz} Hz). Tilning orqa qismini yumshoq tanglayga ko'tarib, yo'g'on (Tafxim bilan) talaffuz qiling.`
         );
       } else if (f2Diff > 90) {
         if (status === 'perfect') status = 'warning';
         score = Math.min(score, 76);
         feedbackParts.push(
-          `Добавьте немного больше глубины и твердости (Тафхим) букве «${cp.letterArabic}».`
+          `«${cp.letterArabic}» harfiga biroz ko'proq yo'g'onlik (Tafxim) bering (F2: ${avgF2Hz} Hz).`
         );
       } else {
-        score = Math.max(score, 92);
+        score = Math.max(score, 98);
         feedbackParts.push(
-          `Отличная твердость (Тафхим) буквы «${cp.letterArabic}».`
+          `«${cp.letterArabic}» harfida Tafxim (yo'g'onlik) a'lo darajada bajarildi.`
         );
       }
     }
@@ -707,19 +772,19 @@ export function analyzeWordOrAyahAudio(
           maxBurstRatio = r;
         }
       }
-      const burstFound = maxBurstRatio >= 1.35 || voicedFrames.length > 0;
+      const burstFound = maxBurstRatio >= 1.32 || voicedFrames.length > 0;
       qalqalahBurstDetected = burstFound;
 
       if (!burstFound) {
         if (status === 'perfect') status = 'warning';
         score = Math.min(score, 72);
         feedbackParts.push(
-          `Сделайте более отчетливый упругий отскок (Калькаля) на букве «${cp.letterArabic}».`
+          `«${cp.letterArabic}» harfida Qalqala (tebranish) eshitilmadi. Harf maxrajini qattiq jipslashtirib, keskin sakratib oching.`
         );
       } else {
-        score = Math.max(score, 91);
+        score = Math.max(score, 98);
         feedbackParts.push(
-          `Четкий упругий отскок Калькаля на букве «${cp.letterArabic}».`
+          `«${cp.letterArabic}» harfida aniq Qalqala tebranishi bajarildi.`
         );
       }
     }

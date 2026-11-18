@@ -26,10 +26,10 @@ import {
 } from 'lucide-react';
 
 const RULE_NAME_UZ: Record<TajweedRuleType, string> = {
-  madd_2: 'Madd (2 harakat)',
-  madd_4: 'Madd (4 harakat)',
-  madd_6: 'Madd (6 harakat)',
-  ghunnah: "G'unna (Dimog'da ushlash)",
+  madd_2: 'Madd Tabiiy (2 harakat • 1.6–2.8)',
+  madd_4: 'Madd Wajib / Munfasil (4–5 harakat • 3.3–5.5)',
+  madd_6: 'Madd Lazim (6 harakat • 4.8–6.8)',
+  ghunnah: "G'unna (Dimog'da 2 harakat ushlash)",
   qalqalah: 'Qalqala (Tebranish)',
   tafkhim: "Tafxim (Yo'g'on o'qish)",
   ithhar: 'Izhor (Aniq talaffuz)',
@@ -75,8 +75,18 @@ function getClearMistakeExplanationUz(ev: CheckPointEvaluation): string {
     return "Ovoz aniqlanmadi. Mikrofonga yaqinroq va balandroq o'qing.";
   }
 
-  // Если с бэкенда уже пришло детальное объяснение с формантами и анатомической подсказкой
-  if (ev.feedbackRu && (ev.feedbackRu.includes('Hz') || ev.feedbackRu.includes('Til') || ev.feedbackRu.includes('Halqum') || ev.feedbackRu.includes('Tomoq'))) {
+  // Если с бэкенда или DSP уже пришло детальное узбекское объяснение с харакатами, формантами или анатомической подсказкой
+  if (
+    ev.feedbackRu &&
+    (ev.feedbackRu.includes('harakat') ||
+      ev.feedbackRu.includes('amalda') ||
+      ev.feedbackRu.includes('Hz') ||
+      ev.feedbackRu.includes('Til') ||
+      ev.feedbackRu.includes('Halqum') ||
+      ev.feedbackRu.includes('Tomoq') ||
+      ev.feedbackRu.includes('Qalqala') ||
+      ev.feedbackRu.includes('Tafxim'))
+  ) {
     return ev.feedbackRu;
   }
 
@@ -96,13 +106,23 @@ function getClearMistakeExplanationUz(ev: CheckPointEvaluation): string {
 
   switch (ev.rule) {
     case 'madd_2':
-    case 'madd_4':
-    case 'madd_6':
-      return `Cho'zish yetarli emas: siz ${
+      return `Madd Tabiiy yetarlicha cho'zilmadi: amalda ${
         ev.measuredHarakaat ?? 0
-      } harakat cho'zdingiz, aslida ${
+      } harakat o'qildi, qoida bo'yicha ${
         ev.expectedHarakaat ?? 2
-      } harakat cho'zish kerak.`;
+      } harakat (me'yor: 1.6–2.8 harakat) cho'zish kerak.`;
+    case 'madd_4':
+      return `Madd Wajib Muttasil / Jaiz Munfasil qisqa o'qildi: amalda ${
+        ev.measuredHarakaat ?? 0
+      } harakat o'qildi, qoida bo'yicha ${
+        ev.expectedHarakaat ?? 4
+      } harakat (me'yor: 3.3–5.5 harakat) cho'zish kerak.`;
+    case 'madd_6':
+      return `Madd Lazim qisqa o'qildi: amalda ${
+        ev.measuredHarakaat ?? 0
+      } harakat o'qildi, qoida bo'yicha ${
+        ev.expectedHarakaat ?? 6
+      } harakat (me'yor: 4.8–6.8 harakat) cho'zish kerak.`;
     case 'tafkhim':
       return `«${ev.letterArabic}» harfi juda yumshoq o'qildi ${ev.measuredF2Hz ? `(F2: ${ev.measuredF2Hz} Hz)` : ''}. ${tip}`;
     case 'qalqalah':
@@ -158,6 +178,7 @@ interface AcousticFeedbackPanelProps {
   ) => void;
   strictnessLevel?: number;
   onPracticeMistake?: (letterArabic: string, rule?: TajweedRuleType) => void;
+  onClearErrors?: () => void;
 }
 
 export default function AcousticFeedbackPanel({
@@ -173,6 +194,7 @@ export default function AcousticFeedbackPanel({
   onSelectMistakeCard,
   strictnessLevel,
   onPracticeMistake,
+  onClearErrors,
 }: AcousticFeedbackPanelProps) {
   const [activeSliceId, setActiveSliceId] = useState<string | null>(null);
   const [activeCardRefId, setActiveCardRefId] = useState<string | null>(null);
@@ -527,7 +549,7 @@ export default function AcousticFeedbackPanel({
       {/* ======================================================================== */}
       {mistakeEvaluations.length > 0 ? (
         <div className="space-y-3">
-          <div className="flex items-center justify-between px-1">
+          <div className="flex items-center justify-between gap-2 px-1">
             <span
               className={cn(
                 'text-xs font-extrabold uppercase tracking-wider',
@@ -538,6 +560,16 @@ export default function AcousticFeedbackPanel({
                 ? `Tavsiyalar va maslahatlar (${mistakeEvaluations.length})`
                 : `Aniqlangan xatolar (${mistakeEvaluations.length})`}
             </span>
+            {onClearErrors && (
+              <button
+                type="button"
+                onClick={onClearErrors}
+                className="bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/40 rounded-lg px-3 py-1 text-xs font-semibold transition-all cursor-pointer shrink-0"
+                title="Sahifadagi barcha qizil xato belgilarini tozalash"
+              >
+                ✕ Xatolarni tozalash
+              </button>
+            )}
           </div>
 
           {mistakeEvaluations.map((ev) => {

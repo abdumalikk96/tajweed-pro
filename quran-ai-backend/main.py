@@ -737,6 +737,34 @@ def compute_high_freq_ratio(signal: np.ndarray, sample_rate: int = 16000) -> flo
     hf_energy = np.sum(fft[freqs >= 3500] ** 2)
     return float(hf_energy / total_energy)
 
+def compute_voiced_madd_duration_ms(signal: np.ndarray, sample_rate: int = 16000) -> float:
+    """
+    Вычисляет длительность удержания гласной (Мадда / Гунны) строго по участку
+    вокализованной энергии (где rms > 0.22 * peak_rms и zcr < 0.30 внутри слога),
+    исключая глухие согласные и паузы между словами.
+    """
+    if len(signal) < 160:
+        return float((len(signal) / max(1, sample_rate)) * 1000.0)
+    frame_len = max(80, sample_rate // 100)  # 10 мс (160 отсчетов при 16 кГц)
+    rms_list: List[float] = []
+    zcr_list: List[float] = []
+    for i in range(0, len(signal) - frame_len + 1, frame_len):
+        frame = signal[i : i + frame_len]
+        rms_val = float(np.sqrt(np.mean(frame ** 2)))
+        zcr_val = compute_zcr(frame)
+        rms_list.append(rms_val)
+        zcr_list.append(zcr_val)
+    if not rms_list:
+        return float((len(signal) / max(1, sample_rate)) * 1000.0)
+    peak_rms = max(0.002, max(rms_list))
+    voiced_thresh = 0.22 * peak_rms
+    voiced_frames = sum(
+        1 for r, z in zip(rms_list, zcr_list) if r > voiced_thresh and z < 0.30
+    )
+    if voiced_frames == 0:
+        return float((len(signal) / max(1, sample_rate)) * 1000.0 * 0.65)
+    return float(voiced_frames * 10.0)
+
 @dataclass
 class LetterCluster:
     base_char: str
@@ -1084,62 +1112,66 @@ def evaluate_madd_by_ten_sheikhs_consensus(
     is_arid_lis_sukoon: bool = False,
 ) -> Tuple[bool, float, str]:
     """
-    Оценивает Мадд (2, 4 или 6 харакатов) относительно СОБСТВЕННОГО темпа ученика (student_unit_ms)
-    и проверяет попадание в допустимый канонический коридор консенсуса всех 10 шейхов.
-    При 50% (Yumshoq) допуск расширяется до 0.6 хараката, при 100% (Ekspert) — канонически строгий (0.35).
-    Для Мадда 'Арид лис-Сукун (Item 3) канонический коридор 1.7 - 6.5 харакатов (100% perfect).
+    Оценивает Мадд (2, 4–5 или 6 харакатов) относительно СОБСТВЕННОГО темпа ученика (student_unit_ms)
+    по каноническим целям:
+    - Madd Tabiiy (2 хараката): норма 1.6 – 2.8 хараката.
+    - Madd Wajib Muttasil / Jaiz Munfasil (4–5 харакатов): норма 3.3 – 5.5 харакатов.
+    - Madd Lazim (6 харакатов): норма 4.8 – 6.8 харакатов.
+    Если чтец уложился в коридор (с учетом ползунка строгости strictness_level), выставляет 98–100% perfect.
     """
+    strictness_clamped = max(50, min(100, strictness_level))
+    strictness_slack = ((100.0 - strictness_clamped) / 50.0) * 0.25
+
     if is_arid_lis_sukoon:
-        if 1.7 <= measured_harakaat <= 6.5:
+        arid_min = max(1.2, 1.6 - strictness_slack)
+        arid_max = 6.8 + strictness_slack
+        if arid_min <= measured_harakaat <= arid_max:
             return True, 99.0, ""
-        elif measured_harakaat < 1.7:
-            deficit_score = round(max(40.0, (measured_harakaat / 1.7) * 85.0), 1)
-            return False, deficit_score, f"Madd 'Ariz lis-sukun qisqa bo'lib qoldi: {measured_harakaat:.1f} harakat (kamida 2 harakat kerak)."
+        elif measured_harakaat < arid_min:
+            deficit_score = round(max(40.0, (measured_harakaat / 1.6) * 82.0), 1)
+            return (
+                False,
+                deficit_score,
+                f"Madd 'Ariz lis-sukun qisqa o'qildi: amalda {measured_harakaat:.1f} harakat cho'zildi, qoida bo'yicha kamida 2 harakat (me'yor: 1.6–6.8 harakat) cho'zish kerak!",
+            )
         else:
-            excess_score = round(max(70.0, 95.0 - (measured_harakaat - 6.5) * 8.0), 1)
+            excess_score = round(max(70.0, 95.0 - (measured_harakaat - arid_max) * 8.0), 1)
             return True, excess_score, ""
 
-    strictness_clamped = max(50, min(100, strictness_level))
-    norm_strictness = (strictness_clamped - 50.0) / 50.0
-    madd_tolerance = 0.60 - 0.25 * norm_strictness
+    if exp_harakaat >= 5.5:
+        base_min, base_max = 4.8, 6.8
+        rule_title_uz = "Madd Lazim (6 harakat)"
+        target_h = 6
+    elif exp_harakaat >= 3.5:
+        base_min, base_max = 3.3, 5.5
+        rule_title_uz = "Madd Wajib Muttasil / Jaiz Munfasil (4–5 harakat)"
+        target_h = 4
+    else:
+        base_min, base_max = 1.6, 2.8
+        rule_title_uz = "Madd Tabiiy (2 harakat)"
+        target_h = 2
 
-    if abs(measured_harakaat - exp_harakaat) <= madd_tolerance:
-        return True, 98.0, ""
-
-    madd_key = "madd_6" if exp_harakaat >= 5 else ("madd_4" if exp_harakaat >= 3.5 else "madd_2")
-    # При 50% допуск F1/F2 расширяется на 70% (tolerance_scale = 1.70), при 100% — канонически строгий (1.00)
-    tolerance_scale = 1.70 - 0.70 * norm_strictness
-
-    all_mins = [prof["madd_ratios"][madd_key][0] for prof in TEN_SHEIKHS_ACOUSTIC_PROFILES.values()]
-    all_maxs = [prof["madd_ratios"][madd_key][1] for prof in TEN_SHEIKHS_ACOUSTIC_PROFILES.values()]
-    corridor_min = min(all_mins) / (1.0 + 0.28 * (tolerance_scale - 1.0))
-    corridor_max = max(all_maxs) * (1.0 + 0.30 * (tolerance_scale - 1.0))
-
-    # Считаем, со сколькими из 10 шейхов согласуется пропорция ученика
-    matched_sheikhs = 0
-    for prof in TEN_SHEIKHS_ACOUSTIC_PROFILES.values():
-        s_min, s_max = prof["madd_ratios"][madd_key]
-        adj_min = s_min - 0.35 * tolerance_scale
-        adj_max = s_max + 0.45 * tolerance_scale
-        if adj_min <= measured_harakaat <= adj_max:
-            matched_sheikhs += 1
+    corridor_min = max(0.8, round(base_min - strictness_slack, 2))
+    corridor_max = round(base_max + strictness_slack, 2)
 
     if corridor_min <= measured_harakaat <= corridor_max:
-        consensus_score = max(86.0, min(99.0, 84.0 + matched_sheikhs * 1.5))
-        return True, round(consensus_score, 1), ""
+        return True, 99.0, ""
 
     if measured_harakaat < corridor_min:
         deficit_ratio = max(0.25, measured_harakaat / max(corridor_min, 0.5))
-        consensus_score = round(max(30.0, deficit_ratio * 82.0), 1)
+        consensus_score = round(max(30.0, deficit_ratio * 78.0), 1)
         issue = (
-            f"Madd qisqa bo'lib qoldi: o'z sur'atingizga nisbatan {measured_harakaat:.1f} harakat cho'zildi "
-            f"(10 qori me'yori bo'yicha kamida {exp_harakaat:.0f} harakat kerak)."
+            f"{rule_title_uz} qisqa o'qildi: amalda {measured_harakaat:.1f} harakat cho'zildi, "
+            f"qoida bo'yicha {target_h} harakat (me'yor: {base_min:.1f}–{base_max:.1f} harakat) cho'zish kerak!"
         )
         return False, consensus_score, issue
 
-    # Слишком сильное перетягивание Мадда
     excess_score = round(max(65.0, 92.0 - (measured_harakaat - corridor_max) * 8.0), 1)
-    return True, excess_score, ""
+    issue = (
+        f"{rule_title_uz} haddan ortiq cho'zildi: amalda {measured_harakaat:.1f} harakat o'qildi, "
+        f"qoida bo'yicha {target_h} harakat (me'yor: {base_min:.1f}–{base_max:.1f} harakat) bo'lishi kerak."
+    )
+    return True, excess_score, issue
 
 def compute_arabic_similarity(expected: str, recognized: str) -> Tuple[float, str, List[Dict[str, Any]]]:
     """
@@ -2297,22 +2329,30 @@ async def analyze_recitation(
                         let_issue = f"«{raw_ch}» harfida Qalqala (sakrash) to'liq hosil qilinmadi: ovoz uzilib qoldi."
                         tip = "Tovush paychalarini bir lahzaga to'liq jipslashtirib, keyin bosim bilan birdaniga yorib sakrating."
 
-                # 5. ГУННА / ИХФА (نّ، مّ، танвин) — проверка длительности назального резонанса (Item 1)
+                # 5. ГУННА / ИХФА (نّ، مّ، танвин) — проверка длительности назального резонанса по вокализованной энергии
                 is_ghunnah_target = (
                     (unit.has_shaddah and letter in ['ن', 'م'])
                     or ('tanween' in (unit.vowel or ''))
                     or ("ghunnah" in rule and letter in ['ن', 'م'])
                 )
                 if is_ghunnah_target:
-                    min_ghunnah_ms = max(110.0, student_unit_ms * 1.5)
-                    if seg_ms < min_ghunnah_ms * 0.78:
+                    voiced_ghunnah_ms = compute_voiced_madd_duration_ms(letter_seg, 16000)
+                    ghunnah_harakaat = round(voiced_ghunnah_ms / max(student_unit_ms, 65.0), 1)
+                    ghunnah_slack = ((100.0 - strictness_level) / 50.0) * 0.25
+                    if ghunnah_harakaat >= (1.6 - ghunnah_slack):
+                        let_status = "perfect"
+                        let_score = max(let_score, 99.0)
+                    else:
                         let_status = "mistake" if strictness_level >= 75 else "warning"
                         let_score = round(64.0 - 10.0 * penalty_weight, 1)
                         let_rule = "ghunnah"
-                        let_issue = f"«{raw_ch}» harfida G'unna (burun rezonansi) yetarlicha cho'zilmadi: kamida 1.5-2 harakat tutilishi kerak."
+                        let_issue = (
+                            f"«{raw_ch}» harfida G'unna (burun rezonansi) qisqa o'qildi: amalda {ghunnah_harakaat:.1f} harakat "
+                            f"cho'zildi, qoida bo'yicha 2 harakat (me'yor: 1.6–2.8 harakat) ushlab o'qish kerak!"
+                        )
                         tip = "Ovozni dimoqqa (burun bo'shlig'iga) yo'naltirib, 2 harakat miqdorida ushlab turing."
 
-                # 6. МАДД (2, 4, 6 харакатов) и МАДД 'АРИД ЛИС-СУКУН (Item 1, 3)
+                # 6. МАДД (2, 4–5, 6 харакатов) и МАДД 'АРИД ЛИС-СУКУН по вокализованной энергии (rms > 0.22 * peak_rms)
                 is_madd_letter = (
                     unit.base_char in ['ا', 'و', 'ي']
                     or unit.has_dagger_alif
@@ -2320,24 +2360,46 @@ async def analyze_recitation(
                     or "madd" in rule
                 )
                 if is_madd_letter and student_unit_ms > 0:
-                    unit_harakaat = seg_ms / max(student_unit_ms, 65.0)
+                    voiced_madd_ms = compute_voiced_madd_duration_ms(letter_seg, 16000)
+                    unit_harakaat = round(voiced_madd_ms / max(student_unit_ms, 65.0), 1)
+                    madd_slack = ((100.0 - strictness_level) / 50.0) * 0.25
                     if getattr(unit, 'is_madd_arid', False) and is_last_word_in_recitation:
-                        if 1.7 <= unit_harakaat <= 6.5:
+                        if (1.6 - madd_slack) <= unit_harakaat <= (6.8 + madd_slack):
                             let_status = "perfect"
                             let_score = 99.0
                             let_issue = ""
-                        elif unit_harakaat < 1.7:
+                        elif unit_harakaat < (1.6 - madd_slack):
                             let_status = "mistake" if strictness_level >= 75 else "warning"
-                            let_score = 65.0
+                            let_score = 62.0
                             let_rule = "madd_2"
-                            let_issue = f"«{raw_ch}» Madd 'Ariz lis-sukun qisqa bo'lib qoldi ({unit_harakaat:.1f} harakat, kamida 2 harakat kerak)."
+                            let_issue = (
+                                f"«{raw_ch}» harfida Madd 'Ariz lis-sukun qisqa o'qildi: amalda {unit_harakaat:.1f} harakat "
+                                f"cho'zildi, qoida bo'yicha 2, 4 yoki 6 harakat (me'yor: 1.6–6.8 harakat) cho'zish kerak!"
+                            )
                     else:
-                        m_target = 5.5 if (unit.has_madd_wave and exp_harakaat >= 5) else (4.0 if unit.has_madd_wave else 2.0)
-                        if unit_harakaat < m_target * 0.65:
+                        is_lazim_madd = unit.has_madd_wave and (unit.weight >= 5.0 or exp_harakaat >= 5.5 or "madd_6" in rule)
+                        is_wajib_madd = not is_lazim_madd and (unit.has_madd_wave or exp_harakaat >= 3.5 or "madd_4" in rule)
+                        if is_lazim_madd:
+                            m_target, m_min, m_max, m_rule, m_title = 6.0, 4.8, 6.8, "madd_6", "Madd Lazim (6 harakat)"
+                        elif is_wajib_madd:
+                            m_target, m_min, m_max, m_rule, m_title = 4.0, 3.3, 5.5, "madd_4", "Madd Wajib Muttasil / Jaiz Munfasil (4–5 harakat)"
+                        else:
+                            m_target, m_min, m_max, m_rule, m_title = 2.0, 1.6, 2.8, "madd_2", "Madd Tabiiy (2 harakat)"
+
+                        if (m_min - madd_slack) <= unit_harakaat <= (m_max + madd_slack):
+                            let_status = "perfect"
+                            let_score = max(let_score, 99.0)
+                            let_rule = m_rule
+                            let_issue = ""
+                        elif unit_harakaat < (m_min - madd_slack):
                             let_status = "mistake" if strictness_level >= 70 else "warning"
-                            let_score = 65.0
-                            let_rule = f"madd_{int(m_target)}"
-                            let_issue = f"«{raw_ch}» Madd yetarlicha cho'zilmadi ({unit_harakaat:.1f} harakat o'rniga {m_target:.0f} harakat kerak)."
+                            let_score = round(max(35.0, (unit_harakaat / m_target) * 78.0), 1)
+                            let_rule = m_rule
+                            let_issue = (
+                                f"«{raw_ch}» harfida {m_title} qisqa o'qildi: amalda {unit_harakaat:.1f} harakat cho'zildi, "
+                                f"qoida bo'yicha {m_target:.0f} harakat (me'yor: {m_min:.1f}–{m_max:.1f} harakat) cho'zish kerak!"
+                            )
+                            tip = f"{m_title} qoidasiga ko'ra unli tovushni to'liq {m_target:.0f} harakat ushlab o'qing."
 
                 if confused_with and let_status == "perfect":
                     let_status = "mistake"
@@ -2484,9 +2546,9 @@ async def analyze_recitation(
                         )
                     )
 
-        # 5. ИНДИВИДУАЛЬНАЯ КАНОНИЧЕСКАЯ ПРОВЕРКА МАДДА ПО КОНСЕНСУСУ 10 ШЕЙХОВ
+        # 5. ИНДИВИДУАЛЬНАЯ КАНОНИЧЕСКАЯ ПРОВЕРКА МАДДА ПО КОНСЕНСУСУ 10 ШЕЙХОВ (ПО ВОКАЛИЗОВАННОЙ ЭНЕРГИИ rms > 0.22 * peak_rms)
         madd_slices_ms = [
-            (end_s - start_s) / 16.0
+            compute_voiced_madd_duration_ms(y_active[start_s:end_s], 16000)
             for u, start_s, end_s in letter_slices
             if not u.is_silent and (u.base_char in ['ا', 'و', 'ي'] or u.has_dagger_alif or u.has_madd_wave)
         ]

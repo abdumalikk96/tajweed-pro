@@ -1,0 +1,6 @@
+quran-ai-backend/
+.venv/
+*.zip
+*.command
+render.yaml
+railway.json

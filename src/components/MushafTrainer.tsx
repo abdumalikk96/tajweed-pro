@@ -476,6 +476,10 @@ export default function MushafTrainer() {
     string | null
   >(null);
 
+  // Выбор диапазона прослушивания на странице («От и До» кликом по номерам аятов)
+  const [listenRangeStart, setListenRangeStart] = useState<number | null>(null);
+  const [listenRangeEnd, setListenRangeEnd] = useState<number | null>(null);
+
   const [calibrationProfile, setCalibrationProfile] =
     useState<VoiceCalibrationProfile>(DEFAULT_CALIBRATION_PROFILE);
   const [isCalibrationModalOpen, setIsCalibrationModalOpen] =
@@ -734,6 +738,7 @@ export default function MushafTrainer() {
             targetUthmani,
             expectedPhonemes,
             calibrationProfile,
+            strictnessLevel,
           }
         );
 
@@ -977,6 +982,7 @@ export default function MushafTrainer() {
             expectedPhonemes,
             calibrationProfile,
             recordedAudioUrl: directWavUrl,
+            strictnessLevel,
           }
         );
 
@@ -1047,6 +1053,7 @@ export default function MushafTrainer() {
             expectedPhonemes,
             calibrationProfile,
             recordedAudioUrl: directWavUrl,
+            strictnessLevel,
           }
         );
 
@@ -1262,7 +1269,92 @@ export default function MushafTrainer() {
   }, [stopRecording]);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioCacheRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const [isAudioBufferingId, setIsAudioBufferingId] = useState<string | null>(
+    null
+  );
   const [playingPageAyahIndex, setPlayingPageAyahIndex] = useState<number | null>(null);
+
+  const getAyahDisplayNumber = useCallback((ayah: Ayah): number => {
+    if (ayah.verseKey) {
+      const parts = ayah.verseKey.split(':');
+      const parsed = parseInt(parts[parts.length - 1], 10);
+      if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+    }
+    return ayah.number;
+  }, []);
+
+  const getOrPreloadAudio = useCallback((url: string): HTMLAudioElement => {
+    let cached = audioCacheRef.current.get(url);
+    if (!cached && typeof window !== 'undefined') {
+      cached = new Audio(url);
+      cached.preload = 'auto';
+      audioCacheRef.current.set(url, cached);
+    }
+    return cached!;
+  }, []);
+
+  // Preload Pool: предзагрузка аудио для текущего аята, следующего аята и всех слов текущего аята
+  useEffect(() => {
+    if (typeof window === 'undefined' || !currentAyah) return;
+
+    const urlsToPreload: string[] = [];
+    const curAyahUrl = buildSheikhAyahAudioUrl(
+      selectedSheikhId,
+      currentSurah.id,
+      currentAyah.number,
+      currentAyah.verseKey
+    );
+    if (curAyahUrl) urlsToPreload.push(curAyahUrl);
+
+    const curIdx = currentSurah.ayahs.findIndex((a) =>
+      a.verseKey && currentAyah.verseKey
+        ? a.verseKey === currentAyah.verseKey
+        : a.number === currentAyah.number
+    );
+    if (curIdx >= 0 && curIdx + 1 < currentSurah.ayahs.length) {
+      const nextAyah = currentSurah.ayahs[curIdx + 1];
+      const nextAyahUrl = buildSheikhAyahAudioUrl(
+        selectedSheikhId,
+        currentSurah.id,
+        nextAyah.number,
+        nextAyah.verseKey
+      );
+      if (nextAyahUrl) urlsToPreload.push(nextAyahUrl);
+    }
+
+    for (const w of currentAyah.words || []) {
+      if (w.audioUrl) urlsToPreload.push(w.audioUrl);
+    }
+
+    if (readingScope === 'page') {
+      for (const a of currentSurah.ayahs) {
+        const u = buildSheikhAyahAudioUrl(
+          selectedSheikhId,
+          currentSurah.id,
+          a.number,
+          a.verseKey
+        );
+        if (u) urlsToPreload.push(u);
+      }
+    }
+
+    // Ограничиваем размер пула (до 140 элементов), чтобы не перегружать память
+    if (audioCacheRef.current.size > 140) {
+      const keys = Array.from(audioCacheRef.current.keys());
+      for (let i = 0; i < 40; i++) {
+        audioCacheRef.current.delete(keys[i]);
+      }
+    }
+
+    for (const u of urlsToPreload) {
+      if (!audioCacheRef.current.has(u)) {
+        const a = new Audio(u);
+        a.preload = 'auto';
+        audioCacheRef.current.set(u, a);
+      }
+    }
+  }, [currentAyah, currentSurah, selectedSheikhId, readingScope]);
 
   // Реактивное обновление playbackRate при переключении селектора скорости (Sekin=0.75, O'rta=1.0, Tez=1.25)
   useEffect(() => {
@@ -1279,48 +1371,93 @@ export default function MushafTrainer() {
     };
   }, []);
 
-  const stopAudio = () => {
+  const stopAudio = useCallback(() => {
     if (audioRef.current) {
+      audioRef.current.onended = null;
+      audioRef.current.onerror = null;
+      audioRef.current.onplaying = null;
       audioRef.current.pause();
-      audioRef.current.currentTime = 0;
+      try {
+        audioRef.current.currentTime = 0;
+      } catch {
+        // ignore
+      }
       audioRef.current = null;
     }
     setPlayingAudioId(null);
+    setIsAudioBufferingId(null);
     setPlayingPageAyahIndex(null);
-  };
+  }, []);
 
-  const playAudioUrl = (url: string, id: string) => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-    }
+  const playAudioUrl = useCallback(
+    (url: string, id: string) => {
+      if (!url) return;
 
-    if (playingAudioId === id) {
-      setPlayingAudioId(null);
+      if (playingAudioId === id) {
+        stopAudio();
+        return;
+      }
+
+      stopAudio();
+
+      const audio = getOrPreloadAudio(url);
+      try {
+        audio.currentTime = 0;
+      } catch {
+        // ignore if not seekable yet
+      }
+      audio.playbackRate = referencePlaybackRate;
+      audioRef.current = audio;
+      setPlayingAudioId(id);
+      setIsAudioBufferingId(audio.readyState >= 3 ? null : id);
       setPlayingPageAyahIndex(null);
-      return;
-    }
 
-    const audio = new Audio(url);
-    audio.playbackRate = referencePlaybackRate;
-    audioRef.current = audio;
-    setPlayingAudioId(id);
-    setPlayingPageAyahIndex(null);
+      audio.onplaying = () => {
+        setIsAudioBufferingId(null);
+      };
+      // Жёсткая остановка строго на границе слова или аята (без автоперехода!)
+      audio.onended = () => {
+        stopAudio();
+      };
+      audio.onerror = () => {
+        stopAudio();
+      };
 
-    audio.onended = () => {
-      setPlayingAudioId(null);
-      setPlayingPageAyahIndex(null);
-    };
-    audio.onerror = () => {
-      setPlayingAudioId(null);
-      setPlayingPageAyahIndex(null);
-    };
+      audio.play().catch(() => {
+        stopAudio();
+      });
+    },
+    [playingAudioId, stopAudio, getOrPreloadAudio, referencePlaybackRate]
+  );
 
-    audio.play().catch(() => {
-      setPlayingAudioId(null);
-      setPlayingPageAyahIndex(null);
-    });
-  };
+  // Интерактивный выбор диапазона аятов («От и До») кликом по номерам аятов на странице
+  const handleAyahRangeClick = useCallback(
+    (ayahNum: number, ayahObj?: Ayah) => {
+      if (ayahObj) {
+        handleSelectAyah(ayahObj);
+      }
+      if (listenRangeStart === null || listenRangeEnd === null) {
+        // 1-й клик устанавливает старт диапазона
+        setListenRangeStart(ayahNum);
+        setListenRangeEnd(ayahNum);
+      } else if (listenRangeStart === listenRangeEnd) {
+        if (ayahNum === listenRangeStart) {
+          // Повторный клик по тому же номеру сбрасывает диапазон
+          setListenRangeStart(null);
+          setListenRangeEnd(null);
+        } else {
+          // 2-й клик по другому номеру устанавливает конец диапазона (min..max)
+          setListenRangeStart(Math.min(listenRangeStart, ayahNum));
+          setListenRangeEnd(Math.max(listenRangeStart, ayahNum));
+        }
+      } else {
+        // Если диапазон уже выбран, повторный клик сбрасывает диапазон
+        setListenRangeStart(null);
+        setListenRangeEnd(null);
+      }
+    },
+    [listenRangeStart, listenRangeEnd]
+  );
 
   const playPageAyahsSequential = (ayahs: Ayah[]) => {
     if (playingAudioId === 'main_stage_page_reference') {
@@ -1330,17 +1467,36 @@ export default function MushafTrainer() {
 
     if (!ayahs || ayahs.length === 0) return;
 
+    // Фильтруем аяты по выбранному диапазону (listenRangeStart .. listenRangeEnd), если он задан
+    const indexedAyahs = ayahs
+      .map((ayah, pageIdx) => ({
+        ayah,
+        pageIdx,
+        ayahNum: getAyahDisplayNumber(ayah),
+      }))
+      .filter((item) => {
+        if (listenRangeStart !== null && listenRangeEnd !== null) {
+          return (
+            item.ayahNum >= listenRangeStart && item.ayahNum <= listenRangeEnd
+          );
+        }
+        return true;
+      });
+
+    if (indexedAyahs.length === 0) return;
+
     stopAudio();
     setPlayingAudioId('main_stage_page_reference');
 
-    const playNext = (index: number) => {
-      if (index >= ayahs.length) {
+    const playNext = (seqIdx: number) => {
+      // Жёсткая остановка строго после последнего аята выбранного диапазона или текущей страницы (НИКОГДА не перелистывает страницу!)
+      if (seqIdx >= indexedAyahs.length) {
         stopAudio();
         return;
       }
 
-      const ayah = ayahs[index];
-      setPlayingPageAyahIndex(index);
+      const { ayah, pageIdx } = indexedAyahs[seqIdx];
+      setPlayingPageAyahIndex(pageIdx);
       handleSelectAyah(ayah);
 
       const sheikhAyahUrl = buildSheikhAyahAudioUrl(
@@ -1349,15 +1505,34 @@ export default function MushafTrainer() {
         ayah.number,
         ayah.verseKey
       );
-      const audio = new Audio(sheikhAyahUrl);
+      const audio = getOrPreloadAudio(sheikhAyahUrl);
+      try {
+        audio.currentTime = 0;
+      } catch {
+        // ignore
+      }
       audio.playbackRate = referencePlaybackRate;
       audioRef.current = audio;
+      setIsAudioBufferingId(
+        audio.readyState >= 3 ? null : 'main_stage_page_reference'
+      );
 
+      audio.onplaying = () => {
+        setIsAudioBufferingId(null);
+      };
       audio.onended = () => {
-        playNext(index + 1);
+        if (seqIdx + 1 >= indexedAyahs.length) {
+          stopAudio();
+        } else {
+          playNext(seqIdx + 1);
+        }
       };
       audio.onerror = () => {
-        playNext(index + 1);
+        if (seqIdx + 1 >= indexedAyahs.length) {
+          stopAudio();
+        } else {
+          playNext(seqIdx + 1);
+        }
       };
 
       audio.play().catch(() => {
@@ -1369,6 +1544,9 @@ export default function MushafTrainer() {
   };
 
   const handleSelectSurah = async (surahId: number) => {
+    stopAudio();
+    setListenRangeStart(null);
+    setListenRangeEnd(null);
     setAnalysisResult(null);
     const catEntry = ALL_114_SURAHS_CATALOG.find((c) => c.id === surahId);
     const startPage = catEntry?.startPage ?? 1;
@@ -1379,6 +1557,9 @@ export default function MushafTrainer() {
     pageNumber: number,
     targetAyahSelector?: 'first' | 'last' | number
   ) => {
+    stopAudio();
+    setListenRangeStart(null);
+    setListenRangeEnd(null);
     const safePage = Math.max(1, Math.min(604, Math.round(pageNumber)));
     setActiveMushafPage(safePage);
     setMushafPageInput(String(safePage));
@@ -1610,9 +1791,11 @@ export default function MushafTrainer() {
   const handleWordClick = (word: QuranWord) => {
     setSelectedAyahNumber(word.ayahNumber);
     setSelectedWord(word);
-    setAnalysisResult(null);
-    setUserRecordingBuffer(null);
-    setUserRecordingUrl(null);
+    if (!mistakeWordIds.has(word.id)) {
+      setAnalysisResult(null);
+      setUserRecordingBuffer(null);
+      setUserRecordingUrl(null);
+    }
     playAudioUrl(word.audioUrl, word.id);
   };
 
@@ -1794,12 +1977,25 @@ export default function MushafTrainer() {
     const ayahKeys = new Set<string>();
     const map = new Map<string, typeof mistakeEvaluations>();
 
-    if (mistakeEvaluations.length === 0) {
+    const letterMistakes = (analysisResult?.letterEvaluations || []).filter(
+      (le) => le.status === 'mistake' || le.status === 'warning' || le.score < 75
+    );
+
+    if (
+      mistakeEvaluations.length === 0 &&
+      letterMistakes.length === 0 &&
+      !examFailedWordId &&
+      (analysisResult === null || analysisResult.overallScore > 22)
+    ) {
       return {
         mistakeWordIds: wordIds,
         mistakeAyahKeys: ayahKeys,
         wordMistakeMap: map,
       };
+    }
+
+    if (examFailedWordId) {
+      wordIds.add(examFailedWordId);
     }
 
     if (isSingleWordMode) {
@@ -1832,6 +2028,28 @@ export default function MushafTrainer() {
       }
     }
 
+    if (
+      typeof analysisResult?.failedWordIndex === 'number' &&
+      analysisResult.failedWordIndex >= 0 &&
+      currentAyah.words[analysisResult.failedWordIndex]
+    ) {
+      const fw = currentAyah.words[analysisResult.failedWordIndex];
+      wordIds.add(fw.id);
+      ayahKeys.add(currentAyah.verseKey ?? `ayah-${currentAyah.number}`);
+    }
+
+    for (const le of letterMistakes) {
+      if (
+        typeof le.word_index === 'number' &&
+        le.word_index >= 0 &&
+        currentAyah.words[le.word_index]
+      ) {
+        const w = currentAyah.words[le.word_index];
+        wordIds.add(w.id);
+        ayahKeys.add(currentAyah.verseKey ?? `ayah-${currentAyah.number}`);
+      }
+    }
+
     return {
       mistakeWordIds: wordIds,
       mistakeAyahKeys: ayahKeys,
@@ -1839,12 +2057,49 @@ export default function MushafTrainer() {
     };
   }, [
     mistakeEvaluations,
+    analysisResult,
+    examFailedWordId,
     isSingleWordMode,
     selectedWord.id,
     currentAyah.number,
     currentAyah.verseKey,
+    currentAyah.words,
     currentSurah.ayahs,
   ]);
+
+  const hasVisualErrors = useMemo(() => {
+    if (isRecording) return false;
+    return (
+      mistakeWordIds.size > 0 ||
+      mistakeEvaluations.length > 0 ||
+      Boolean(examFailedWordId) ||
+      Boolean(examMistakeBanner) ||
+      (analysisResult !== null &&
+        (analysisResult.overallScore < 80 ||
+          (analysisResult.letterEvaluations || []).some(
+            (le) => le.status === 'mistake' || le.status === 'warning'
+          )))
+    );
+  }, [
+    isRecording,
+    mistakeWordIds,
+    mistakeEvaluations,
+    examFailedWordId,
+    examMistakeBanner,
+    analysisResult,
+  ]);
+
+  // Мгновенный сброс всех красных подсветок ошибок со слов и букв («✕ Xatolarni tozalash»)
+  const clearVisualErrors = useCallback(() => {
+    setAnalysisResult(null);
+    setActiveHighlightedMistakeId(null);
+    setActiveHighlightedWordId(null);
+    setExamFailedWordId(null);
+    setExamMistakeBanner(null);
+    setExamSuccessBanner(null);
+    setUserRecordingBuffer(null);
+    setUserRecordingUrl(null);
+  }, []);
 
   // Двунаправленный скролл 1: Клик по ошибке в тексте -> скролл к карточке ошибки в правой панели
   const scrollToMistakeInPanel = (wordId: string) => {
@@ -3244,6 +3499,7 @@ export default function MushafTrainer() {
                   <button
                     type="button"
                     onClick={() => {
+                      stopAudio();
                       setReadingScope('word');
                     }}
                     className={cn(
@@ -3258,6 +3514,7 @@ export default function MushafTrainer() {
                   <button
                     type="button"
                     onClick={() => {
+                      stopAudio();
                       setReadingScope('ayah');
                     }}
                     className={cn(
@@ -3272,6 +3529,7 @@ export default function MushafTrainer() {
                   <button
                     type="button"
                     onClick={() => {
+                      stopAudio();
                       setReadingScope('page');
                       if (selectedSurahId < 1000) {
                         handleLoadMushafPage(activeMushafPage);
@@ -3312,6 +3570,18 @@ export default function MushafTrainer() {
                     A+
                   </button>
                 </div>
+
+                {/* Кнопка сброса красных ошибок («✕ Xatolarni tozalash») */}
+                {hasVisualErrors && (
+                  <button
+                    type="button"
+                    onClick={clearVisualErrors}
+                    title="Barcha qizil xato belgilarini bir bosishda tozalash"
+                    className="bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/40 rounded-lg px-3 py-1 text-xs font-semibold transition-all cursor-pointer flex items-center gap-1 shadow-sm"
+                  >
+                    <span>✕ Xatolarni tozalash</span>
+                  </button>
+                )}
               </div>
 
               <div className="flex items-center gap-2.5">
@@ -3542,6 +3812,80 @@ export default function MushafTrainer() {
                   </div>
                 )}
 
+              {/* Интерактивная полоска выбора диапазона аятов текущей страницы («От и До») */}
+              {isPageMode && currentSurah.ayahs.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2 rounded-2xl bg-[#242B35] border border-[#5E4D8C] text-xs shadow-sm">
+                  <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                    <span className="font-extrabold text-[#4ADE80] shrink-0 flex items-center gap-1">
+                      <span>🎧 Eshitish oralig&apos;i:</span>
+                    </span>
+                    <div className="flex flex-wrap items-center gap-1">
+                      {currentSurah.ayahs.map((ayah, pillIdx) => {
+                        const aNum = getAyahDisplayNumber(ayah);
+                        const isInRange =
+                          listenRangeStart !== null &&
+                          listenRangeEnd !== null &&
+                          aNum >= listenRangeStart &&
+                          aNum <= listenRangeEnd;
+                        const isRangeStart =
+                          listenRangeStart !== null && aNum === listenRangeStart;
+                        const isRangeEnd =
+                          listenRangeEnd !== null && aNum === listenRangeEnd;
+
+                        return (
+                          <React.Fragment
+                            key={`range-pill-${ayah.verseKey ?? ayah.number}-${pillIdx}`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => handleAyahRangeClick(aNum, ayah)}
+                              title={`Oyat ${aNum}: 1-bosish — boshlanishi (▶️), 2-bosish — tugashi (⏹️)`}
+                              className={cn(
+                                'px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 border',
+                                isRangeStart || isRangeEnd
+                                  ? 'bg-[#4ADE80] text-[#0B1710] border-[#6EE7A0] font-extrabold shadow-[0_0_12px_rgba(74,222,128,0.3)]'
+                                  : isInRange
+                                  ? 'bg-[#4ADE80]/20 text-[#4ADE80] border-[#4ADE80]/50 font-bold'
+                                  : 'bg-[#1E2530] hover:bg-[#2C3542] text-slate-200 border-[#5E4D8C]'
+                              )}
+                            >
+                              {isRangeStart && <span>▶️</span>}
+                              <span>Oyat {aNum}</span>
+                              {isRangeEnd && <span>⏹️</span>}
+                            </button>
+                            {pillIdx < currentSurah.ayahs.length - 1 && (
+                              <span className="text-slate-500 text-[10px] select-none">
+                                —
+                              </span>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {listenRangeStart !== null && listenRangeEnd !== null ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setListenRangeStart(null);
+                          setListenRangeEnd(null);
+                        }}
+                        title="Tanlangan oraliqni bekor qilish va butun sahifani tanlash"
+                        className="px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/40 text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1"
+                      >
+                        <span>✕ Hammasi</span>
+                      </button>
+                    ) : (
+                      <span className="text-[11px] text-slate-300 font-medium">
+                        Oraliq tanlash uchun oyat raqamlarini bosing
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Контейнер страницы и текста без внутренних полос прокрутки (куб растет вместе со страницей!) */}
               <div className="h-auto w-full overflow-visible rounded-2xl border border-[#5E4D8C] bg-[#161B22] shadow-2xl p-4 sm:p-5">
                   {isPageMode ? (
@@ -3726,6 +4070,16 @@ export default function MushafTrainer() {
                                       currentAyah.verseKey === ayah.verseKey;
                                     const isCurrentlyPlayingThisAyah =
                                       playingPageAyahIndex === aIdx;
+                                    const ayahNumeric =
+                                      getAyahDisplayNumber(ayah);
+                                    const isInListenRange =
+                                      listenRangeStart !== null &&
+                                      listenRangeEnd !== null &&
+                                      ayahNumeric >= listenRangeStart &&
+                                      ayahNumeric <= listenRangeEnd;
+                                    const isWordPlayingNow =
+                                      playingAudioId === word.id ||
+                                      isAudioBufferingId === word.id;
 
                                     return (
                                       <span
@@ -3739,13 +4093,15 @@ export default function MushafTrainer() {
                                           }
                                         }}
                                         className={cn(
-                                          'inline-block px-1 py-0.5 rounded-lg cursor-pointer transition-all duration-200',
+                                          'relative inline-flex items-center gap-0.5 px-1 py-0.5 rounded-lg cursor-pointer transition-all duration-200',
                                           isHighlighted
                                             ? 'bg-[#4ADE80]/40 text-white ring-2 ring-[#4ADE80]'
                                             : isSelected
                                             ? 'bg-[#4ADE80]/25 text-[#4ADE80] font-bold'
                                             : isCurrentlyPlayingThisAyah
                                             ? 'bg-[#4ADE80]/20 text-white'
+                                            : isInListenRange
+                                            ? 'bg-[#4ADE80]/10 ring-1 ring-[#4ADE80]/40 rounded-lg'
                                             : isCurrentAyahActive
                                             ? 'bg-[#4ADE80]/10'
                                             : 'hover:text-[#4ADE80]'
@@ -3756,9 +4112,25 @@ export default function MushafTrainer() {
                                             : word.transliteration
                                         }
                                       >
+                                        {isWordPlayingNow && (
+                                          <Volume2 className="w-3.5 h-3.5 text-[#4ADE80] animate-pulse shrink-0" />
+                                        )}
                                         {renderWordLetterClusters(word, {
                                           textSize: 'regular',
                                         })}
+                                        {hasMistake && (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              clearVisualErrors();
+                                            }}
+                                            title="Xato belgisini tozalash (✕)"
+                                            className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-rose-500/30 hover:bg-rose-500 text-rose-200 hover:text-white border border-rose-400/60 text-[9px] font-sans font-extrabold leading-none shrink-0 transition-all cursor-pointer"
+                                          >
+                                            ✕
+                                          </button>
+                                        )}
                                       </span>
                                     );
                                   }
@@ -3773,12 +4145,25 @@ export default function MushafTrainer() {
                                     currentAyah.verseKey === ayah.verseKey;
                                   const isCurrentlyPlayingThisAyah =
                                     playingPageAyahIndex === aIdx;
+                                  const numericAyah =
+                                    Number(ayahNumInSurah) || ayah.number;
+                                  const isRangeStartMedallion =
+                                    listenRangeStart !== null &&
+                                    numericAyah === listenRangeStart;
+                                  const isRangeEndMedallion =
+                                    listenRangeEnd !== null &&
+                                    numericAyah === listenRangeEnd;
+                                  const isInRangeMedallion =
+                                    listenRangeStart !== null &&
+                                    listenRangeEnd !== null &&
+                                    numericAyah >= listenRangeStart &&
+                                    numericAyah <= listenRangeEnd;
 
                                   return (
                                     <span
                                       key={`ayah-end-${ayahKey}-${aIdx}-${iIdx}`}
                                       onClick={() => {
-                                        handleSelectAyah(ayah);
+                                        handleAyahRangeClick(numericAyah, ayah);
                                         if (hasAyahMistake) {
                                           const firstErrWord = ayah.words.find(
                                             (w) => mistakeWordIds.has(w.id)
@@ -3791,9 +4176,16 @@ export default function MushafTrainer() {
                                         }
                                       }}
                                       className={cn(
-                                        'text-[#FBBF24] bg-[#4ADE80]/15 border border-[#4ADE80]/50 rounded-full px-2 py-0.2 mx-1 inline-flex items-center justify-center font-bold shadow-sm select-none font-arabic text-base sm:text-lg cursor-pointer transition-all shrink-0',
+                                        'text-[#FBBF24] bg-[#4ADE80]/15 border border-[#4ADE80]/50 rounded-full px-2 py-0.2 mx-1 inline-flex items-center justify-center gap-1 font-bold shadow-sm select-none font-arabic text-base sm:text-lg cursor-pointer transition-all shrink-0',
                                         hasAyahMistake &&
                                           'text-rose-300 bg-rose-500/25 border-rose-500/70 ring-1 ring-rose-500/50',
+                                        (isRangeStartMedallion ||
+                                          isRangeEndMedallion) &&
+                                          'bg-[#4ADE80]/30 border-[#4ADE80] ring-2 ring-[#4ADE80] text-white',
+                                        isInRangeMedallion &&
+                                          !isRangeStartMedallion &&
+                                          !isRangeEndMedallion &&
+                                          'bg-[#4ADE80]/20 ring-1 ring-[#4ADE80]/60',
                                         isCurrentlyPlayingThisAyah &&
                                           'bg-[#4ADE80]/35 border-[#4ADE80] ring-2 ring-[#4ADE80]',
                                         isCurrentAyahActive &&
@@ -3802,13 +4194,23 @@ export default function MushafTrainer() {
                                       )}
                                       title={`Oyat ${
                                         ayah.verseKey ?? ayah.number
-                                      }${
+                                      } — Eshitish oralig'ini belgilash uchun bosing (1-bosish: ▶️ Boshlanishi, 2-bosish: ⏹️ Tugashi, qayta bosish: ✕ Tozalash)${
                                         hasAyahMistake
-                                          ? ' (Xato aniqlangan)'
+                                          ? ' • Xato aniqlangan'
                                           : ''
                                       }`}
                                     >
-                                      {`﴿${toArabicDigits(ayahNumInSurah)}﴾`}
+                                      {isRangeStartMedallion && (
+                                        <span className="text-[10px] font-sans leading-none">
+                                          ▶️
+                                        </span>
+                                      )}
+                                      <span>{`﴿${toArabicDigits(ayahNumInSurah)}﴾`}</span>
+                                      {isRangeEndMedallion && (
+                                        <span className="text-[10px] font-sans leading-none">
+                                          ⏹️
+                                        </span>
+                                      )}
                                     </span>
                                   );
                                 })}
@@ -3826,12 +4228,13 @@ export default function MushafTrainer() {
                   dir="rtl"
                   id={`center-word-${selectedWord.id}`}
                   onClick={() => {
+                    handleWordClick(selectedWord);
                     if (mistakeWordIds.has(selectedWord.id)) {
                       scrollToMistakeInPanel(selectedWord.id);
                     }
                   }}
                   className={cn(
-                    'font-arabic text-white leading-normal select-none py-2 transition-all',
+                    'relative inline-flex items-center justify-center gap-3 font-arabic text-white leading-normal select-none py-2 transition-all cursor-pointer',
                     isExamHiddenNow && 'blur-xl select-none opacity-20',
                     activeHighlightedWordId === selectedWord.id && 'ring-4 ring-[#4ADE80]/80 rounded-3xl px-6 bg-[#4ADE80]/20 text-white'
                   )}
@@ -3839,7 +4242,26 @@ export default function MushafTrainer() {
                     fontSize: `${Math.round(92 * fontScale)}px`,
                   }}
                 >
+                  {(playingAudioId === selectedWord.id ||
+                    playingAudioId === 'main_stage_reference' ||
+                    isAudioBufferingId === selectedWord.id ||
+                    isAudioBufferingId === 'main_stage_reference') && (
+                    <Volume2 className="w-7 h-7 text-[#4ADE80] animate-pulse shrink-0" />
+                  )}
                   {renderWordLetterClusters(selectedWord, { textSize: 'giant' })}
+                  {hasVisualErrors && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        clearVisualErrors();
+                      }}
+                      title="Xato belgisini tozalash (✕)"
+                      className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-rose-500/25 hover:bg-rose-500 text-rose-200 hover:text-white border border-rose-400/60 text-xs font-sans font-extrabold leading-none shrink-0 transition-all cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
               ) : (
                 /* Режим целого аята и экзамена */
@@ -3906,6 +4328,9 @@ export default function MushafTrainer() {
                     );
                     const isLiveActiveCursor =
                       isRecording && wIdx === activeLiveWordIdx;
+                    const isWordPlayingNow =
+                      playingAudioId === word.id ||
+                      isAudioBufferingId === word.id;
 
                     return (
                       <span
@@ -3918,7 +4343,7 @@ export default function MushafTrainer() {
                           }
                         }}
                         className={cn(
-                          'cursor-pointer rounded-xl px-2 py-1 transition-all duration-200',
+                          'inline-flex items-center gap-1 cursor-pointer rounded-xl px-2 py-1 transition-all duration-200',
                           isWordHiddenInMemorizedExam
                             ? 'blur-lg select-none opacity-20 pointer-events-none'
                             : 'blur-0 opacity-100',
@@ -3939,20 +4364,51 @@ export default function MushafTrainer() {
                             : word.transliteration
                         }
                       >
+                        {isWordPlayingNow && (
+                          <Volume2 className="w-4 h-4 text-[#4ADE80] animate-pulse shrink-0" />
+                        )}
                         {renderWordLetterClusters(word, {
                           textSize:
                             currentAyah.words.length > 20 ? 'regular' : 'large',
                         })}
+                        {(hasMistake || isExamFailedWord) && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              clearVisualErrors();
+                            }}
+                            title="Xato belgisini tozalash (✕)"
+                            className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-rose-500/30 hover:bg-rose-500 text-rose-200 hover:text-white border border-rose-400/60 text-[10px] font-sans font-extrabold leading-none shrink-0 transition-all cursor-pointer"
+                          >
+                            ✕
+                          </button>
+                        )}
                       </span>
                     );
                   })}
                   <span
+                    onClick={() => {
+                      if (!isExamReferenceLocked) {
+                        playAudioUrl(
+                          currentSheikhAyahUrl,
+                          'main_stage_reference'
+                        );
+                      }
+                    }}
                     className={cn(
-                      'text-[#FBBF24] bg-[#4ADE80]/15 border border-[#4ADE80]/50 rounded-full px-2 py-0.2 mx-1 inline-flex items-center justify-center font-bold shadow-sm select-none font-arabic text-2xl sm:text-3xl shrink-0',
-                      isExamHiddenNow && 'blur-lg select-none opacity-20'
+                      'text-[#FBBF24] bg-[#4ADE80]/15 border border-[#4ADE80]/50 rounded-full px-2 py-0.2 mx-1 inline-flex items-center justify-center gap-1 font-bold shadow-sm select-none font-arabic text-2xl sm:text-3xl shrink-0 cursor-pointer transition-all hover:bg-[#4ADE80]/25',
+                      isExamHiddenNow && 'blur-lg select-none opacity-20',
+                      (playingAudioId === 'main_stage_reference' ||
+                        isAudioBufferingId === 'main_stage_reference') &&
+                        'ring-2 ring-[#4ADE80] bg-[#4ADE80]/30'
                     )}
-                    title={`Oyat ${currentAyah.verseKey ?? currentAyah.number}`}
+                    title={`Oyat ${currentAyah.verseKey ?? currentAyah.number} — Oyatni eshitish uchun bosing`}
                   >
+                    {(playingAudioId === 'main_stage_reference' ||
+                      isAudioBufferingId === 'main_stage_reference') && (
+                      <Volume2 className="w-4 h-4 text-[#4ADE80] animate-pulse shrink-0" />
+                    )}
                     {`﴿${toArabicDigits(
                       currentAyah.verseKey
                         ? currentAyah.verseKey.split(':')[1] ||
@@ -4110,13 +4566,23 @@ export default function MushafTrainer() {
                     : 'bg-[#242B35] hover:bg-[#2C3542] text-slate-100 border border-[#5E4D8C]'
                 )}
               >
-                <Volume2 className="w-4 h-4 text-[#4ADE80] shrink-0" />
+                <Volume2
+                  className={cn(
+                    'w-4 h-4 text-[#4ADE80] shrink-0',
+                    (playingAudioId !== null || isAudioBufferingId !== null) &&
+                      'animate-pulse'
+                  )}
+                />
                 <span>
                   {isExamReferenceLocked
                     ? '🔒 Imtihon vaqtida namuna yopiq'
                     : isPageMode
                     ? playingAudioId === 'main_stage_page_reference'
-                    ? `Sahifa o'qilmoqda (${(playingPageAyahIndex ?? 0) + 1}/${currentSurah.ayahs.length})...`
+                      ? listenRangeStart !== null && listenRangeEnd !== null
+                        ? `Oraliq o'qilmoqda (Oyat ${listenRangeStart}–${listenRangeEnd})...`
+                        : `Sahifa o'qilmoqda (${(playingPageAyahIndex ?? 0) + 1}/${currentSurah.ayahs.length})...`
+                      : listenRangeStart !== null && listenRangeEnd !== null
+                      ? `🔊 Oraliqni eshitish: Oyat ${listenRangeStart}–${listenRangeEnd} (${referencePlaybackRate}x)`
                       : `🔊 Sahifani to'liq eshitish (${referencePlaybackRate}x)`
                     : playingAudioId === 'main_stage_reference' ||
                       playingAudioId === selectedWord.id
@@ -4291,6 +4757,7 @@ export default function MushafTrainer() {
               onSelectMistakeCard={handleSelectMistakeFromPanel}
               strictnessLevel={strictnessLevel}
               onPracticeMistake={handlePracticeMistake}
+              onClearErrors={clearVisualErrors}
             />
           </div>
         )}

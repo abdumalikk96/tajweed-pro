@@ -127,15 +127,21 @@ function inspectWavBuffer(bytes: Uint8Array): {
   const sorted = [...rmsFrames].sort((a, b) => a - b);
   const noiseFloor = sorted[Math.floor(sorted.length * 0.2)] ?? 0.005;
   const activeThresh = Math.max(0.008, noiseFloor * 2.2);
+  const peakRms = sorted[sorted.length - 1] ?? 0.005;
+  const maddVoicedThresh = Math.max(activeThresh, 0.22 * peakRms);
 
   let firstActive = -1;
   let lastActive = -1;
   let voicedCount = 0;
+  let maddVoicedCount = 0;
   for (let idx = 0; idx < rmsFrames.length; idx++) {
     if (rmsFrames[idx] >= activeThresh) {
       if (firstActive === -1) firstActive = idx;
       lastActive = idx;
       voicedCount++;
+    }
+    if (rmsFrames[idx] > maddVoicedThresh) {
+      maddVoicedCount++;
     }
   }
 
@@ -144,7 +150,8 @@ function inspectWavBuffer(bytes: Uint8Array): {
     firstActive >= 0 && lastActive >= firstActive
       ? Math.max(100, (lastActive - firstActive + 1) * 10)
       : 0;
-  const voicedDurationMs = voicedCount * 10;
+  const voicedDurationMs =
+    maddVoicedCount > 0 ? maddVoicedCount * 10 : voicedCount * 10;
   const rmsMean =
     rmsFrames.length > 0
       ? rmsFrames.reduce((a, b) => a + b, 0) / rmsFrames.length
