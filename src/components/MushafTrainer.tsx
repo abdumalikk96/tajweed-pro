@@ -3480,7 +3480,7 @@ export default function MushafTrainer() {
       {/* ============================================================================ */}
       {/* 2. ЦЕНТРАЛЬНАЯ КОЛОНКА (БЕЗ ВЫДВИЖНЫХ БЛОКОВ, СДВИГАЮЩИХ СТРАНИЦУ!)          */}
       {/* ============================================================================ */}
-      <main className="flex-1 min-w-0 h-full overflow-y-auto flex flex-col p-3 sm:p-5 relative rounded-2xl bg-[#1B2028] border border-[#52437A] shadow-xl text-slate-100">
+      <main className="flex-1 min-w-0 w-full max-w-full box-border h-full overflow-y-auto overflow-x-hidden flex flex-col p-3 sm:p-5 relative rounded-2xl bg-[#1B2028] border border-[#52437A] shadow-xl text-slate-100">
         {/* Верхняя панель с четкими кнопками */}
         <header className="w-full flex flex-wrap items-center justify-between gap-3 pb-3.5 border-b border-[#52437A]/50 mb-3">
           <div className="flex items-center gap-3 min-w-0">
@@ -3621,10 +3621,10 @@ export default function MushafTrainer() {
         </header>
 
         {/* Центрированная карточка фокуса с благородным тёмно-серым фоном #1E2530 (расширяется вместе с масштабом страницы!) */}
-        <div className="flex-1 flex items-start justify-center p-1 sm:p-2">
+        <div className="flex-1 min-w-0 w-full max-w-full box-border flex items-start justify-center p-1 sm:p-2">
           <div
             className={cn(
-              'w-full h-auto overflow-visible rounded-3xl bg-[#1E2530] border border-[#52437A] shadow-2xl text-center transition-all text-white',
+              'min-w-0 w-full max-w-full box-border h-auto overflow-visible rounded-3xl bg-[#1E2530] border border-[#52437A] shadow-2xl text-center transition-all text-white',
               isPageMode && pageViewMode === 'image'
                 ? 'p-3 sm:p-5 space-y-3'
                 : isPageMode || currentAyah.words.length > 12
@@ -3633,10 +3633,10 @@ export default function MushafTrainer() {
             )}
             style={
               isPageMode
-                ? { maxWidth: `${Math.max(860, Math.round(880 * fontScale))}px` }
+                ? { maxWidth: `min(100%, ${Math.max(860, Math.round(880 * fontScale))}px)` }
                 : currentAyah.words.length > 12
-                ? { maxWidth: `${Math.max(820, Math.round(840 * fontScale))}px` }
-                : undefined
+                ? { maxWidth: `min(100%, ${Math.max(820, Math.round(840 * fontScale))}px)` }
+                : { maxWidth: '100%' }
             }
           >
             {/* Метка выбранного слова / аята / сахифы + переключатели режимов */}
@@ -3965,7 +3965,7 @@ export default function MushafTrainer() {
             )}
 
             {/* Арабский текст: Жестко ограниченный контейнер области чтения без наезда на подпись и осциллограмму */}
-            <div className="space-y-2.5 py-1 relative">
+            <div className="space-y-2.5 py-1 relative min-w-0 w-full max-w-full box-border">
               {isExamHiddenNow &&
                 (analysisResult?.spokenWordsCount ?? 0) === 0 && (
                   <div className="mb-2 flex items-center justify-center pointer-events-none select-none">
@@ -3978,15 +3978,15 @@ export default function MushafTrainer() {
                   </div>
                 )}
 
-              {/* Контейнер страницы и текста без внутренних полос прокрутки (куб растет вместе со страницей!) */}
-              <div className="h-auto w-full overflow-visible rounded-2xl border border-[#5E4D8C] bg-[#161B22] shadow-2xl p-4 sm:p-5">
+              {/* Контейнер страницы и текста без внутренних полос прокрутки (куб растет вместе со страницей, жестко удерживая левую и правую границы!) */}
+              <div className="h-auto min-w-0 w-full max-w-full overflow-x-hidden box-border rounded-2xl border border-[#5E4D8C] bg-[#161B22] shadow-2xl p-4 sm:p-5">
                   {isPageMode ? (
                     pageViewMode === 'image' ? (
-                      /* Режим изображения страницы Мусхафа (целиком помещается в растущий куб без скролла!) */
+                      /* Режим изображения страницы Мусхафа (целиком помещается в растущий куб без выхода за края карточки!) */
                       <div
-                        className="h-auto w-full overflow-visible mx-auto select-none"
+                        className="h-auto w-full max-w-full overflow-x-hidden box-border mx-auto select-none"
                         style={{
-                          maxWidth: `${Math.round(680 * fontScale)}px`,
+                          maxWidth: `min(100%, ${Math.round(680 * fontScale)}px)`,
                           width: '100%',
                           height: 'auto',
                         }}
@@ -3994,30 +3994,30 @@ export default function MushafTrainer() {
                         <img
                           src={`https://android.quran.com/data/width_1260/page${String(activeMushafPage).padStart(3, '0')}.png`}
                           alt={`Mus'haf sahifasi ${activeMushafPage}`}
-                          className="w-full h-auto block mx-auto object-contain select-none transition-all filter invert brightness-150 contrast-125 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]"
+                          className="max-w-full w-full h-auto block mx-auto object-contain select-none transition-all filter invert brightness-150 contrast-125 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]"
                           loading="eager"
                         />
                       </div>
                     ) : (
-                      /* Точная построчная копия страницы печатного Мусхафа (все 15 строк целиком без внутреннего скролла!) */
+                      /* Точная построчная копия страницы печатного Мусхафа (все 15 строк целиком с адаптивным переносом внутри рамки!) */
                       <div
                         dir="rtl"
-                        className="font-arabic text-right select-text transition-all duration-200 h-auto w-full overflow-visible mx-auto text-white space-y-1.5"
+                        className="font-arabic text-right select-text transition-all duration-200 h-auto min-w-0 w-full max-w-full overflow-x-hidden box-border mx-auto text-white space-y-1.5"
                         style={{
-                          maxWidth: `${Math.round(780 * fontScale)}px`,
-                          fontSize: `${Math.round(
-                            (currentSurah.ayahs.reduce(
+                          maxWidth: '100%',
+                          fontSize: `clamp(18px, calc(${
+                            currentSurah.ayahs.reduce(
                               (acc, a) => acc + a.words.length,
                               0
                             ) > 85
-                              ? 26
+                              ? '1.35rem'
                               : currentSurah.ayahs.reduce(
                                   (acc, a) => acc + a.words.length,
                                   0
                                 ) > 45
-                              ? 29
-                              : 32) * fontScale
-                          )}px`,
+                              ? '1.5rem'
+                              : '1.65rem'
+                          } * ${fontScale}), 48px)`,
                           lineHeight: 2.1,
                         }}
                       >
@@ -4140,12 +4140,12 @@ export default function MushafTrainer() {
                               </div>
                             )}
 
-                            {/* Строки страницы Мусхафа (до 15 канонических строк сверху вниз) */}
+                            {/* Строки страницы Мусхафа (до 15 канонических строк сверху вниз с защитой flex-wrap от выхода за рамку) */}
                             {sortedLines.map(([lineNum, items]) => (
                               <div
                                 key={`mushaf-line-${block.surahId}-${lineNum}`}
                                 dir="rtl"
-                                className="flex items-center justify-between w-full border-b border-slate-800/40 py-0.5 leading-[2.1]"
+                                className="flex flex-wrap items-center justify-between gap-x-2 gap-y-2 w-full max-w-full box-border border-b border-slate-800/40 py-0.5 leading-[2.1]"
                               >
                                 {items.map((item, iIdx) => {
                                   if (item.kind === 'word') {
@@ -4186,7 +4186,7 @@ export default function MushafTrainer() {
                                           }
                                         }}
                                         className={cn(
-                                          'relative inline-flex items-center gap-0.5 px-1 py-0.5 rounded-lg cursor-pointer transition-all duration-200',
+                                          'relative inline-flex items-center gap-0.5 px-1 py-0.5 rounded-lg cursor-pointer transition-all duration-200 max-w-full whitespace-nowrap',
                                           isHighlighted
                                             ? 'bg-[#4ADE80]/40 text-white ring-2 ring-[#4ADE80]'
                                             : isSelected
@@ -4316,12 +4316,12 @@ export default function MushafTrainer() {
                     }
                   }}
                   className={cn(
-                    'relative inline-flex items-center justify-center gap-3 font-arabic text-white leading-normal select-none py-2 transition-all cursor-pointer',
+                    'relative inline-flex flex-wrap items-center justify-center gap-3 font-arabic text-white leading-normal select-none py-2 transition-all cursor-pointer max-w-full box-border',
                     isExamHiddenNow && 'blur-xl select-none opacity-20',
                     activeHighlightedWordId === selectedWord.id && 'ring-4 ring-[#4ADE80]/80 rounded-3xl px-6 bg-[#4ADE80]/20 text-white'
                   )}
                   style={{
-                    fontSize: `${Math.round(92 * fontScale)}px`,
+                    fontSize: `clamp(32px, calc(4.8rem * ${fontScale}), 96px)`,
                   }}
                 >
                   {(playingAudioId === selectedWord.id ||
@@ -4350,25 +4350,25 @@ export default function MushafTrainer() {
                 <div
                   dir="rtl"
                   className={cn(
-                    'font-arabic text-white select-none flex flex-wrap items-center justify-center rounded-2xl',
+                    'font-arabic text-white select-none flex flex-wrap items-center justify-between gap-x-2 gap-y-2 w-full max-w-full overflow-x-hidden box-border rounded-2xl',
                     currentAyah.words.length <= 8
-                      ? 'leading-relaxed gap-x-3.5 gap-y-2.5 py-2'
+                      ? 'leading-relaxed justify-center gap-x-3.5 gap-y-2.5 py-2'
                       : currentAyah.words.length <= 20
-                      ? 'leading-snug gap-x-2.5 gap-y-2 py-1.5'
+                      ? 'leading-snug justify-center gap-x-2.5 gap-y-2 py-1.5'
                       : currentAyah.words.length <= 40
                       ? 'leading-snug gap-x-2 gap-y-1.5 py-1'
                       : 'leading-normal gap-1.5 p-3 bg-[#181F2A] border border-[#5E4D8C]'
                   )}
                   style={{
-                    fontSize: `${Math.round(
-                      (currentAyah.words.length <= 8
-                        ? 44
+                    fontSize: `clamp(18px, calc(${
+                      currentAyah.words.length <= 8
+                        ? '2.1rem'
                         : currentAyah.words.length <= 20
-                        ? 36
+                        ? '1.75rem'
                         : currentAyah.words.length <= 40
-                        ? 30
-                        : 25) * fontScale
-                    )}px`,
+                        ? '1.5rem'
+                        : '1.35rem'
+                    } * ${fontScale}), 48px)`,
                   }}
                 >
                   {currentAyah.words.map((word, wIdx) => {
@@ -4425,7 +4425,7 @@ export default function MushafTrainer() {
                           }
                         }}
                         className={cn(
-                          'inline-flex items-center gap-1 cursor-pointer rounded-xl px-2 py-1 transition-all duration-200',
+                          'inline-flex items-center gap-1 cursor-pointer rounded-xl px-2 py-1 transition-all duration-200 max-w-full whitespace-nowrap',
                           isWordHiddenInMemorizedExam
                             ? 'blur-lg select-none opacity-20 pointer-events-none'
                             : 'blur-0 opacity-100',
