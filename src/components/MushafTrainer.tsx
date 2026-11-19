@@ -485,6 +485,17 @@ export default function MushafTrainer() {
   const [strictnessLevel, setStrictnessLevel] = useState<number>(75);
   const [selectedSheikhId, setSelectedSheikhId] = useState<SheikhId>('husary');
   const [fontScale, setFontScale] = useState<number>(1.15);
+  const [isCompactViewport, setIsCompactViewport] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const updateViewport = () => {
+      setIsCompactViewport(window.innerWidth < 1340);
+    };
+    updateViewport();
+    window.addEventListener('resize', updateViewport);
+    return () => window.removeEventListener('resize', updateViewport);
+  }, []);
 
   // Режим сдачи урока (Dars topshirish / Imtihon): формат и правило возврата при ошибке
   const [examSubMode, setExamSubMode] = useState<ExamSubMode>('memorized');
@@ -1420,6 +1431,11 @@ export default function MushafTrainer() {
     setPlayingQueueInfo(null);
   }, []);
 
+  // Гарантированная остановка любого активного HTMLAudioElement при смене режима чтения, экзамена или чтеца
+  useEffect(() => {
+    stopAudio();
+  }, [readingScope, isExamMode, selectedSheikhId, stopAudio]);
+
   const playAudioUrl = useCallback(
     (url: string, id: string) => {
       if (!url) return;
@@ -1575,6 +1591,10 @@ export default function MushafTrainer() {
     const applySelection = (loaded: SurahMetadata) => {
       setSelectedSurahId(loaded.id);
       if (loaded.ayahs && loaded.ayahs.length > 0) {
+        const firstNum = getAyahDisplayNumber(loaded.ayahs[0]);
+        const lastNum = getAyahDisplayNumber(
+          loaded.ayahs[loaded.ayahs.length - 1]
+        );
         if (typeof targetAyahSelector === 'number') {
           const match =
             loaded.ayahs.find((a) => a.number === targetAyahSelector) ??
@@ -1585,11 +1605,21 @@ export default function MushafTrainer() {
             ) ??
             loaded.ayahs[0];
           handleSelectAyah(match);
+          setPageStartAyah(getAyahDisplayNumber(match));
+          setPageEndAyah(lastNum);
+          isSelectingEndRef.current = false;
         } else if (targetAyahSelector === 'last') {
-          handleSelectAyah(loaded.ayahs[loaded.ayahs.length - 1]);
+          const lastAyah = loaded.ayahs[loaded.ayahs.length - 1];
+          handleSelectAyah(lastAyah);
+          setPageStartAyah(firstNum);
+          setPageEndAyah(lastNum);
+          isSelectingEndRef.current = false;
         } else {
           // По умолчанию всегда выбираем первый аят загруженной сахифы
           handleSelectAyah(loaded.ayahs[0]);
+          setPageStartAyah(firstNum);
+          setPageEndAyah(lastNum);
+          isSelectingEndRef.current = false;
         }
       }
     };
@@ -1717,6 +1747,7 @@ export default function MushafTrainer() {
   };
 
   const handleNextAyah = () => {
+    stopAudio();
     setUserRecordingBuffer(null);
     setUserRecordingUrl(null);
     setAnalysisResult(null);
@@ -1725,13 +1756,18 @@ export default function MushafTrainer() {
 
     const currentIndex = getCurrentAyahIndex();
     if (currentIndex < currentSurah.ayahs.length - 1) {
-      handleSelectAyah(currentSurah.ayahs[currentIndex + 1]);
+      const nextAyah = currentSurah.ayahs[currentIndex + 1];
+      handleSelectAyah(nextAyah);
+      setPageStartAyah(getAyahDisplayNumber(nextAyah));
+      setPageEndAyah(lastPageAyahNumber);
+      isSelectingEndRef.current = false;
     } else if (activeMushafPage < 604) {
       handleLoadMushafPage(activeMushafPage + 1, 'first');
     }
   };
 
   const handlePrevAyah = () => {
+    stopAudio();
     setUserRecordingBuffer(null);
     setUserRecordingUrl(null);
     setAnalysisResult(null);
@@ -1740,7 +1776,11 @@ export default function MushafTrainer() {
 
     const currentIndex = getCurrentAyahIndex();
     if (currentIndex > 0) {
-      handleSelectAyah(currentSurah.ayahs[currentIndex - 1]);
+      const prevAyah = currentSurah.ayahs[currentIndex - 1];
+      handleSelectAyah(prevAyah);
+      setPageStartAyah(getAyahDisplayNumber(prevAyah));
+      setPageEndAyah(lastPageAyahNumber);
+      isSelectingEndRef.current = false;
     } else if (activeMushafPage > 1) {
       handleLoadMushafPage(activeMushafPage - 1, 'last');
     }
@@ -1799,6 +1839,7 @@ export default function MushafTrainer() {
     const num = parseInt(quickAyahInput.trim(), 10);
     if (Number.isNaN(num) || num <= 0) return;
 
+    stopAudio();
     setUserRecordingBuffer(null);
     setUserRecordingUrl(null);
     setAnalysisResult(null);
@@ -1816,6 +1857,9 @@ export default function MushafTrainer() {
 
     if (targetAyah) {
       handleSelectAyah(targetAyah);
+      setPageStartAyah(getAyahDisplayNumber(targetAyah));
+      setPageEndAyah(lastPageAyahNumber);
+      isSelectingEndRef.current = false;
       setQuickAyahInput('');
       setTimeout(() => {
         const el = document.getElementById(
@@ -3964,8 +4008,8 @@ export default function MushafTrainer() {
               </div>
             )}
 
-            {/* Арабский текст: Жестко ограниченный контейнер области чтения без наезда на подпись и осциллограмму */}
-            <div className="space-y-2.5 py-1 relative min-w-0 w-full max-w-full box-border">
+            {/* Арабский текст: Жестко ограниченный контейнер области чтения с нижним отступом pb-10 над закрепленным доком */}
+            <div className="space-y-2.5 py-1 pb-10 relative min-w-0 w-full max-w-full box-border">
               {isExamHiddenNow &&
                 (analysisResult?.spokenWordsCount ?? 0) === 0 && (
                   <div className="mb-2 flex items-center justify-center pointer-events-none select-none">
@@ -4140,164 +4184,188 @@ export default function MushafTrainer() {
                               </div>
                             )}
 
-                            {/* Строки страницы Мусхафа (до 15 канонических строк сверху вниз с защитой flex-wrap от выхода за рамку) */}
-                            {sortedLines.map(([lineNum, items]) => (
-                              <div
-                                key={`mushaf-line-${block.surahId}-${lineNum}`}
-                                dir="rtl"
-                                className="flex flex-wrap items-center justify-between gap-x-2 gap-y-2 w-full max-w-full box-border border-b border-slate-800/40 py-0.5 leading-[2.1]"
-                              >
-                                {items.map((item, iIdx) => {
-                                  if (item.kind === 'word') {
-                                    const { word, ayah, aIdx } = item;
-                                    const hasMistake = mistakeWordIds.has(
-                                      word.id
-                                    );
-                                    const isSelected =
-                                      selectedWord.id === word.id;
-                                    const isHighlighted =
-                                      activeHighlightedWordId === word.id;
-                                    const ayahNumeric =
-                                      getAyahDisplayNumber(ayah);
-                                    const isInPageRange =
-                                      ayahNumeric >= pageStartAyah &&
-                                      ayahNumeric <= pageEndAyah;
-                                    const isCustomRangeActive =
-                                      pageStartAyah !== firstPageAyahNumber ||
-                                      pageEndAyah !== lastPageAyahNumber;
+                            {/* Умное переключение раскладки в режиме Sahifa (Matn):
+                                - При стандартном масштабе (fontScale <= 1.15 на широких экранах): 15 канонических строк с justify-start и gap-x-2.5 gap-y-1.5
+                                - При увеличенном масштабе (fontScale > 1.15) или на узком экране ноутбука: единый плавный RTL-поток без разрывов и висячих слов */}
+                            {(() => {
+                              const useContinuousFlow =
+                                fontScale > 1.15 || isCompactViewport;
+                              const renderGroups: Array<
+                                [number | string, PageLineItem[]]
+                              > = useContinuousFlow
+                                ? [
+                                    [
+                                      'flow',
+                                      sortedLines.flatMap(
+                                        ([, lineItems]) => lineItems
+                                      ),
+                                    ],
+                                  ]
+                                : sortedLines;
+
+                              return renderGroups.map(([lineNum, items]) => (
+                                <div
+                                  key={`mushaf-line-${block.surahId}-${lineNum}`}
+                                  dir="rtl"
+                                  className={cn(
+                                    'flex flex-wrap justify-start items-center w-full max-w-full box-border leading-[2.1]',
+                                    useContinuousFlow
+                                      ? 'gap-x-2.5 gap-y-3 py-1'
+                                      : 'gap-x-2.5 gap-y-1.5 border-b border-slate-800/40 py-0.5'
+                                  )}
+                                >
+                                  {items.map((item, iIdx) => {
+                                    if (item.kind === 'word') {
+                                      const { word, ayah, aIdx } = item;
+                                      const hasMistake = mistakeWordIds.has(
+                                        word.id
+                                      );
+                                      const isSelected =
+                                        selectedWord.id === word.id;
+                                      const isHighlighted =
+                                        activeHighlightedWordId === word.id;
+                                      const ayahNumeric =
+                                        getAyahDisplayNumber(ayah);
+                                      const isInPageRange =
+                                        ayahNumeric >= pageStartAyah &&
+                                        ayahNumeric <= pageEndAyah;
+                                      const isCustomRangeActive =
+                                        pageStartAyah !== firstPageAyahNumber ||
+                                        pageEndAyah !== lastPageAyahNumber;
+                                      const isCurrentAyahActive =
+                                        currentAyah.number === ayah.number &&
+                                        currentAyah.verseKey === ayah.verseKey;
+                                      const isCurrentlyPlayingThisAyah =
+                                        playingPageAyahIndex === aIdx;
+                                      const isWordPlayingNow =
+                                        playingAudioId === word.id ||
+                                        isAudioBufferingId === word.id;
+
+                                      return (
+                                        <span
+                                          key={`${word.id}-${iIdx}`}
+                                          id={`page-word-${word.id}`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleWordClick(word);
+                                            if (hasMistake) {
+                                              scrollToMistakeInPanel(word.id);
+                                            }
+                                          }}
+                                          className={cn(
+                                            'relative inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-lg cursor-pointer transition-all duration-200 max-w-full whitespace-nowrap',
+                                            isHighlighted
+                                              ? 'bg-[#4ADE80]/40 text-white ring-2 ring-[#4ADE80]'
+                                              : isSelected
+                                              ? 'bg-[#4ADE80]/25 text-[#4ADE80] font-bold'
+                                              : isCurrentlyPlayingThisAyah
+                                              ? 'bg-[#4ADE80]/25 text-white ring-1 ring-[#4ADE80]'
+                                              : isCustomRangeActive && isInPageRange
+                                              ? 'bg-[#4ADE80]/10 ring-1 ring-[#4ADE80]/40 rounded-lg'
+                                              : isCurrentAyahActive
+                                              ? 'bg-[#4ADE80]/10 ring-1 ring-[#4ADE80]/30 rounded-lg'
+                                              : 'hover:text-[#4ADE80]'
+                                          )}
+                                          title={
+                                            hasMistake
+                                              ? `Xato: ${word.textUthmani} (O'ng paneldan ko'rish uchun bosing)`
+                                              : word.transliteration
+                                          }
+                                        >
+                                          {isWordPlayingNow && (
+                                            <Volume2 className="w-3.5 h-3.5 text-[#4ADE80] animate-pulse shrink-0" />
+                                          )}
+                                          {renderWordLetterClusters(word, {
+                                            textSize: 'regular',
+                                          })}
+                                          {hasMistake && (
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                clearVisualErrors();
+                                              }}
+                                              title="Xato belgisini tozalash (✕)"
+                                              className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-rose-500/30 hover:bg-rose-500 text-rose-200 hover:text-white border border-rose-400/60 text-[9px] font-sans font-extrabold leading-none shrink-0 transition-all cursor-pointer"
+                                            >
+                                              ✕
+                                            </button>
+                                          )}
+                                        </span>
+                                      );
+                                    }
+
+                                    const { ayah, aIdx, ayahNumInSurah } = item;
+                                    const ayahKey =
+                                      ayah.verseKey ?? `ayah-${ayah.number}`;
+                                    const hasAyahMistake =
+                                      mistakeAyahKeys.has(ayahKey);
                                     const isCurrentAyahActive =
                                       currentAyah.number === ayah.number &&
                                       currentAyah.verseKey === ayah.verseKey;
                                     const isCurrentlyPlayingThisAyah =
                                       playingPageAyahIndex === aIdx;
-                                    const isWordPlayingNow =
-                                      playingAudioId === word.id ||
-                                      isAudioBufferingId === word.id;
+                                    const numericAyah =
+                                      Number(ayahNumInSurah) || ayah.number;
+                                    const isStartMedallion =
+                                      numericAyah === pageStartAyah;
+                                    const isEndMedallion =
+                                      numericAyah === pageEndAyah;
 
                                     return (
                                       <span
-                                        key={`${word.id}-${iIdx}`}
-                                        id={`page-word-${word.id}`}
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          handleWordClick(word);
-                                          if (hasMistake) {
-                                            scrollToMistakeInPanel(word.id);
+                                        key={`ayah-end-${ayahKey}-${aIdx}-${iIdx}`}
+                                        onClick={() => {
+                                          handleOyatlarButtonClick(ayah);
+                                          if (hasAyahMistake) {
+                                            const firstErrWord = ayah.words.find(
+                                              (w) => mistakeWordIds.has(w.id)
+                                            );
+                                            if (firstErrWord) {
+                                              scrollToMistakeInPanel(
+                                                firstErrWord.id
+                                              );
+                                            }
                                           }
                                         }}
                                         className={cn(
-                                          'relative inline-flex items-center gap-0.5 px-1 py-0.5 rounded-lg cursor-pointer transition-all duration-200 max-w-full whitespace-nowrap',
-                                          isHighlighted
-                                            ? 'bg-[#4ADE80]/40 text-white ring-2 ring-[#4ADE80]'
-                                            : isSelected
-                                            ? 'bg-[#4ADE80]/25 text-[#4ADE80] font-bold'
-                                            : isCurrentlyPlayingThisAyah
-                                            ? 'bg-[#4ADE80]/25 text-white ring-1 ring-[#4ADE80]'
-                                            : isCustomRangeActive && isInPageRange
-                                            ? 'bg-[#4ADE80]/10 ring-1 ring-[#4ADE80]/40 rounded-lg'
-                                            : isCurrentAyahActive
-                                            ? 'bg-[#4ADE80]/10 ring-1 ring-[#4ADE80]/30 rounded-lg'
-                                            : 'hover:text-[#4ADE80]'
+                                          'text-[#FBBF24] bg-[#4ADE80]/15 border border-[#4ADE80]/50 rounded-full px-2 py-0.2 mx-1 inline-flex items-center justify-center gap-1 font-bold shadow-sm select-none font-arabic text-base sm:text-lg cursor-pointer transition-all shrink-0',
+                                          hasAyahMistake &&
+                                            'text-rose-300 bg-rose-500/25 border-rose-500/70 ring-1 ring-rose-500/50',
+                                          isCurrentlyPlayingThisAyah &&
+                                            'bg-[#4ADE80]/35 border-[#4ADE80] ring-2 ring-[#4ADE80] text-white',
+                                          (isStartMedallion || isEndMedallion) &&
+                                            !hasAyahMistake &&
+                                            'bg-[#4ADE80]/25 border-[#4ADE80] ring-2 ring-[#4ADE80] text-white',
+                                          isCurrentAyahActive &&
+                                            !hasAyahMistake &&
+                                            'border-[#4ADE80] ring-1 ring-[#4ADE80]/60'
                                         )}
-                                        title={
-                                          hasMistake
-                                            ? `Xato: ${word.textUthmani} (O'ng paneldan ko'rish uchun bosing)`
-                                            : word.transliteration
-                                        }
+                                        title={`Oyat ${
+                                          ayah.verseKey ?? ayah.number
+                                        } — Oraliqni tanlash uchun bosing (▶️ Boshlanishi / ⏹️ Tugashi)${
+                                          hasAyahMistake
+                                            ? ' • Xato aniqlangan'
+                                            : ''
+                                        }`}
                                       >
-                                        {isWordPlayingNow && (
-                                          <Volume2 className="w-3.5 h-3.5 text-[#4ADE80] animate-pulse shrink-0" />
+                                        {isStartMedallion && (
+                                          <span className="text-[10px] font-sans leading-none">
+                                            ▶️
+                                          </span>
                                         )}
-                                        {renderWordLetterClusters(word, {
-                                          textSize: 'regular',
-                                        })}
-                                        {hasMistake && (
-                                          <button
-                                            type="button"
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              clearVisualErrors();
-                                            }}
-                                            title="Xato belgisini tozalash (✕)"
-                                            className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-rose-500/30 hover:bg-rose-500 text-rose-200 hover:text-white border border-rose-400/60 text-[9px] font-sans font-extrabold leading-none shrink-0 transition-all cursor-pointer"
-                                          >
-                                            ✕
-                                          </button>
+                                        <span>{`﴿${toArabicDigits(ayahNumInSurah)}﴾`}</span>
+                                        {isEndMedallion && (
+                                          <span className="text-[10px] font-sans leading-none">
+                                            ⏹️
+                                          </span>
                                         )}
                                       </span>
                                     );
-                                  }
-
-                                  const { ayah, aIdx, ayahNumInSurah } = item;
-                                  const ayahKey =
-                                    ayah.verseKey ?? `ayah-${ayah.number}`;
-                                  const hasAyahMistake =
-                                    mistakeAyahKeys.has(ayahKey);
-                                  const isCurrentAyahActive =
-                                    currentAyah.number === ayah.number &&
-                                    currentAyah.verseKey === ayah.verseKey;
-                                  const isCurrentlyPlayingThisAyah =
-                                    playingPageAyahIndex === aIdx;
-                                  const numericAyah =
-                                    Number(ayahNumInSurah) || ayah.number;
-                                  const isStartMedallion =
-                                    numericAyah === pageStartAyah;
-                                  const isEndMedallion =
-                                    numericAyah === pageEndAyah;
-
-                                  return (
-                                    <span
-                                      key={`ayah-end-${ayahKey}-${aIdx}-${iIdx}`}
-                                      onClick={() => {
-                                        handleOyatlarButtonClick(ayah);
-                                        if (hasAyahMistake) {
-                                          const firstErrWord = ayah.words.find(
-                                            (w) => mistakeWordIds.has(w.id)
-                                          );
-                                          if (firstErrWord) {
-                                            scrollToMistakeInPanel(
-                                              firstErrWord.id
-                                            );
-                                          }
-                                        }
-                                      }}
-                                      className={cn(
-                                        'text-[#FBBF24] bg-[#4ADE80]/15 border border-[#4ADE80]/50 rounded-full px-2 py-0.2 mx-1 inline-flex items-center justify-center gap-1 font-bold shadow-sm select-none font-arabic text-base sm:text-lg cursor-pointer transition-all shrink-0',
-                                        hasAyahMistake &&
-                                          'text-rose-300 bg-rose-500/25 border-rose-500/70 ring-1 ring-rose-500/50',
-                                        isCurrentlyPlayingThisAyah &&
-                                          'bg-[#4ADE80]/35 border-[#4ADE80] ring-2 ring-[#4ADE80] text-white',
-                                        (isStartMedallion || isEndMedallion) &&
-                                          !hasAyahMistake &&
-                                          'bg-[#4ADE80]/25 border-[#4ADE80] ring-2 ring-[#4ADE80] text-white',
-                                        isCurrentAyahActive &&
-                                          !hasAyahMistake &&
-                                          'border-[#4ADE80] ring-1 ring-[#4ADE80]/60'
-                                      )}
-                                      title={`Oyat ${
-                                        ayah.verseKey ?? ayah.number
-                                      } — Oraliqni tanlash uchun bosing (▶️ Boshlanishi / ⏹️ Tugashi)${
-                                        hasAyahMistake
-                                          ? ' • Xato aniqlangan'
-                                          : ''
-                                      }`}
-                                    >
-                                      {isStartMedallion && (
-                                        <span className="text-[10px] font-sans leading-none">
-                                          ▶️
-                                        </span>
-                                      )}
-                                      <span>{`﴿${toArabicDigits(ayahNumInSurah)}﴾`}</span>
-                                      {isEndMedallion && (
-                                        <span className="text-[10px] font-sans leading-none">
-                                          ⏹️
-                                        </span>
-                                      )}
-                                    </span>
-                                  );
-                                })}
-                              </div>
-                            ))}
+                                  })}
+                                </div>
+                              ));
+                            })()}
                           </div>
                         );
                       });
@@ -4350,14 +4418,14 @@ export default function MushafTrainer() {
                 <div
                   dir="rtl"
                   className={cn(
-                    'font-arabic text-white select-none flex flex-wrap items-center justify-between gap-x-2 gap-y-2 w-full max-w-full overflow-x-hidden box-border rounded-2xl',
+                    'font-arabic text-white select-none flex flex-wrap items-center justify-start gap-x-2.5 gap-y-2.5 w-full max-w-full overflow-x-hidden box-border rounded-2xl',
                     currentAyah.words.length <= 8
                       ? 'leading-relaxed justify-center gap-x-3.5 gap-y-2.5 py-2'
                       : currentAyah.words.length <= 20
                       ? 'leading-snug justify-center gap-x-2.5 gap-y-2 py-1.5'
                       : currentAyah.words.length <= 40
-                      ? 'leading-snug gap-x-2 gap-y-1.5 py-1'
-                      : 'leading-normal gap-1.5 p-3 bg-[#181F2A] border border-[#5E4D8C]'
+                      ? 'leading-snug gap-x-2.5 gap-y-2 py-1'
+                      : 'leading-normal gap-2 p-3 bg-[#181F2A] border border-[#5E4D8C]'
                   )}
                   style={{
                     fontSize: `clamp(18px, calc(${
@@ -4425,7 +4493,7 @@ export default function MushafTrainer() {
                           }
                         }}
                         className={cn(
-                          'inline-flex items-center gap-1 cursor-pointer rounded-xl px-2 py-1 transition-all duration-200 max-w-full whitespace-nowrap',
+                          'inline-flex items-center gap-1 cursor-pointer rounded-xl px-1.5 py-0.5 transition-all duration-200 max-w-full whitespace-nowrap',
                           isWordHiddenInMemorizedExam
                             ? 'blur-lg select-none opacity-20 pointer-events-none'
                             : 'blur-0 opacity-100',
